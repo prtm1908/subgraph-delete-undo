@@ -1,0 +1,14 @@
+# databases and run output
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.loading
+run/
+fixture/
+fixture_small/
+before.jsonl
+after.jsonl
+report.json
+__pycache__/
+.DS_Store
