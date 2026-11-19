@@ -50,8 +50,41 @@ That makes a second run write nothing, and a crashed run resume from its last co
 
 ## What the model proposed that I rejected, and why
 
-_To write from the AI sessions._
+Design:
+- **Several parents per node**, offered as a fix for a "conflict" with the task. I had it re-read the
+  task: "subtree", "root" and "its parent" describe a tree, so one parent per node stayed.
+- **Fixing the design page before showing me the problems.** I stopped it before any edit landed,
+  had it list the problems first, and approved every change one by one after that.
+- **A wrong example** of undo reversing a person's re-point (an arrow to a deleted node is deleted
+  too). It corrected it when I asked for the steps, and I chose the rule that undo skips an arrow a
+  person moved away.
+- **Invariant 2 as a problem.** Undo brings back parent and child, so only the reading of "parent is
+  live" needed one line.
+- **Handling edits to deleted nodes.** The task does not ask for it; it stays one "rejected" sentence.
+- **A preview before undo:** good UX, not core capability for a prototype.
+
+Build:
+- **Choices that bent the task's wording**, found when I had every deviation checked against it:
+  WAL mode (extra files beside "one SQLite file"), dropping repeated tags ("tags (a list)"), and
+  skipping the tag recompute after a delete. All three were put back.
+- **Refusing operations by the "wrong" actor**, beyond the task's one rule. Only two refusals remain:
+  ingest can't edit fields, and people can't ingest.
+- **Silently skipping an op_id that was already used**, even for a different operation. Now an error.
+- **The 24-hour undo limit**, my own idea: I had it enforced, then removed it, because the task says
+  any delete can be undone later and puts retention out of scope.
+
+I also weighed keeping a duplicate node instead of merging, and kept merging: invariant 3 allows one
+live node per name, and the task's outcomes include "merged".
 
 ## What I verified myself
 
-_To write from the AI sessions._
+- **The design, after every iteration.** I reviewed the whole page each time it changed, and read
+  every audit against the task point by point, accepting, rejecting or questioning each one myself.
+- **The undo stories.** I stepped through the undo tabs, asked for the other fields' clashes beside
+  tags, and asked for every exceptional case to become a story of its own, start to end. Those stories
+  are now tests (`fixture_small/ops_a` to `ops_f`).
+- **Claims against the task's wording.** I made the model re-check several before accepting them:
+  several parents, undo of anything but a delete, only ingest creating nodes, ids built from op_id and
+  name, edits to deleted nodes.
+- **The code against the task and the design.** I had every deviation listed, decided each one, and
+  had duplicated code removed with outputs proven byte-identical before and after.
