@@ -1,0 +1,986 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Undo in a Shared Graph</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+/* Layout: one reading column (about 70 characters), figures allowed to run wider, one running example reused in every section. */
+:root{
+  --bg:#f5f6f9; --surface:#ffffff; --panel:#eceff4; --fg:#1a2230; --muted:#5b6779; --line:#d3d9e2;
+  --edge:#55617a; --accent:#2c5bd1; --newid:#7446cf; --restored:#177a50; --merged:#a86200; --skipped:#b03f3f;
+  --code-bg:#eef1f6;
+  --sans:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --head:"Space Grotesk","Inter",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#11151c; --surface:#1a202a; --panel:#161b24; --fg:#e7ebf1; --muted:#9ba7b9; --line:#2d3644;
+    --edge:#93a0b6; --accent:#86a8ff; --newid:#b9a0ff; --restored:#52c592; --merged:#e3a548; --skipped:#ea8585;
+    --code-bg:#161c26; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#11151c; --surface:#1a202a; --panel:#161b24; --fg:#e7ebf1; --muted:#9ba7b9; --line:#2d3644;
+  --edge:#93a0b6; --accent:#86a8ff; --newid:#b9a0ff; --restored:#52c592; --merged:#e3a548; --skipped:#ea8585;
+  --code-bg:#161c26; color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:16px/1.6 var(--sans);
+  padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));padding-block:40px 80px}
+.page{max-width:980px;margin:0 auto;display:flex;flex-direction:column;gap:56px}
+.col{max-width:700px}
+header h1{font:700 2.3rem/1.1 var(--head);margin:0 0 14px;text-wrap:balance;letter-spacing:-.01em}
+header p{margin:0;color:var(--muted);max-width:660px}
+header p+p{margin-top:12px}
+section{display:flex;flex-direction:column;gap:18px;min-width:0}
+h2{font:600 1.55rem/1.2 var(--head);margin:0;text-wrap:balance;display:flex;gap:12px;align-items:baseline}
+h2 .n{font:600 .9rem var(--mono);color:var(--accent)}
+h3{font:600 1.08rem/1.3 var(--head);margin:14px 0 0;text-wrap:balance}
+p{margin:0;max-width:700px}
+ul,ol{margin:0;padding-left:1.25em;max-width:700px;display:flex;flex-direction:column;gap:8px}
+code{font:.86em var(--mono);background:var(--code-bg);padding:.08em .34em;border-radius:4px}
+pre{margin:0;background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;font:13px/1.55 var(--mono);max-width:100%}
+pre code{background:none;padding:0;font:inherit}
+.cm{color:var(--muted)}
+figure{margin:0;display:flex;flex-direction:column;gap:10px;min-width:0}
+figcaption{color:var(--muted);font-size:.9rem;max-width:700px}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.scroll svg{display:block;width:100%;height:auto;min-width:660px}
+b.r{color:var(--restored)} b.m{color:var(--merged)} b.s{color:var(--skipped)}
+
+/* data rows */
+.rows{overflow-x:auto;min-width:0}
+table{border-collapse:collapse;font:12.5px/1.4 var(--mono);width:100%}
+caption{caption-side:top;text-align:left;font:600 .82rem var(--sans);letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding-bottom:6px}
+th,td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-weight:600;color:var(--muted)}
+td.wrap{white-space:normal;font-family:var(--sans);font-size:.86rem}
+.pair{display:grid;grid-template-columns:minmax(0,300px) minmax(0,1fr);gap:24px;align-items:start}
+.pair > *{min-width:0}
+.stack{display:flex;flex-direction:column;gap:18px;min-width:0}
+@media (max-width:760px){.pair{grid-template-columns:minmax(0,1fr)}}
+.mini{border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow-x:auto}
+.mini svg{display:block;width:100%;height:auto}
+
+/* parts list */
+dl{margin:0;display:grid;grid-template-columns:minmax(0,190px) minmax(0,1fr);gap:10px 20px;max-width:760px}
+dt{font:500 .86rem var(--mono);color:var(--fg)}
+dd{margin:0;color:var(--muted);font-size:.95rem}
+@media (max-width:600px){dl{grid-template-columns:minmax(0,1fr);gap:2px 0} dd{margin-bottom:10px}}
+
+/* stepper */
+.stepper{display:flex;flex-direction:column;gap:12px;min-width:0}
+.tabs{display:flex;flex-wrap:wrap;gap:8px}
+.tabs button{font:500 .9rem var(--sans);color:var(--fg);background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:7px 14px;cursor:pointer}
+.tabs button[aria-selected="true"]{background:var(--accent);border-color:var(--accent);color:var(--surface)}
+.tabs button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:.82rem;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{display:inline-block;width:22px;height:0;border-top:2px solid var(--edge)}
+.sw.d{border-top-style:dashed} .sw.g{opacity:.35} .sw.res{border-color:var(--restored)} .sw.mer{border-color:var(--merged)}
+.k-own{font-weight:700;color:var(--fg)} .k-new{font-weight:700;color:var(--accent)} .k-id{font:600 .8rem var(--mono);color:var(--newid)}
+.story{border-left:3px solid var(--line);padding-left:16px;display:flex;flex-direction:column;gap:8px;max-width:720px}
+.story h4{margin:0;font:600 1rem var(--head)}
+
+/* svg shared */
+.bx{fill:var(--surface);stroke:var(--edge);stroke-width:1.1}
+.grp{fill:var(--panel);stroke:var(--line);stroke-width:1.2}
+.sub{fill:var(--surface);stroke:var(--line);stroke-width:1.1}
+.t{font:500 12px var(--sans);fill:var(--fg)}
+.tb{font:600 12px var(--sans);fill:var(--fg)}
+.tm{font:500 11.5px var(--mono);fill:var(--fg)}
+.ts{font:400 10.5px var(--sans);fill:var(--muted)}
+.ar{fill:none;stroke:var(--edge);stroke-width:1.3}
+.mk{fill:var(--edge)} .mk-res{fill:var(--restored)} .mk-mer{fill:var(--merged)}
+.o-mer{fill:var(--surface);stroke:var(--merged);stroke-width:2}
+.o-res{fill:var(--surface);stroke:var(--restored);stroke-width:2}
+.o-skp{fill:var(--surface);stroke:var(--skipped);stroke-width:2}
+.c-mer{font:700 12.5px var(--sans);fill:var(--merged)} .c-res{font:700 12.5px var(--sans);fill:var(--restored)} .c-skp{font:700 12.5px var(--sans);fill:var(--skipped)}
+
+/* story graph */
+.nb{fill:var(--surface);stroke:var(--edge);stroke-width:1.2}
+.node.ghost{opacity:.5} .node.ghost .nb{fill:none;stroke-dasharray:4 3}
+.node.restored .nb{stroke:var(--restored);stroke-width:2.2}
+.node.merged .nb{stroke:var(--merged);stroke-width:2.2}
+.ghostbox{fill:none;stroke:var(--muted);stroke-width:1.1;stroke-dasharray:4 3;opacity:.7}
+.nm{font:600 10.5px var(--sans);fill:var(--fg)}
+.id{font:500 10px var(--mono);fill:var(--muted)} .id.idnew{fill:var(--newid);font-weight:600}
+.tg{font:400 10px var(--sans);fill:var(--muted)}
+.tg .tg-own{fill:var(--fg);font-weight:700}
+.tg .tg-none{font-style:italic}
+.tg .tg-new{fill:var(--accent);font-weight:700}
+.fl{font:400 10px var(--sans);fill:var(--fg)}
+.fl .lb{fill:var(--muted)}
+.fl .none{fill:var(--muted);font-style:italic}
+.fl.chg,.fl.chg .none{fill:var(--accent);font-weight:600}
+b.f{color:var(--accent)}
+.fnote{color:var(--muted);font-size:.9rem}
+#fieldtable td.grp-start,#fieldtable th.grp-start{border-top:2px solid var(--line)}
+.note{font:500 9.5px var(--sans);fill:var(--muted)} .note.restored{fill:var(--restored)} .note.merged{fill:var(--merged)}
+.edge{fill:none;stroke:var(--edge);stroke-width:1.4}
+.edge.r{stroke-dasharray:5 4}
+.edge.ghost{opacity:.28}
+.edge.res{stroke:var(--restored);stroke-width:2.2}
+.edge.mer{stroke:var(--merged);stroke-width:2.2}
+.edge.skp{stroke:var(--skipped);stroke-width:1.8;stroke-dasharray:2 4}
+.node.skipped{opacity:.85} .node.skipped .nb{fill:none;stroke:var(--skipped);stroke-dasharray:4 3}
+.note.skipped{fill:var(--skipped)}
+.mk-skp{fill:var(--skipped)}
+.fl .lb.hot{fill:var(--accent);font-weight:600}
+.sw.skp{border-color:var(--skipped);border-top-style:dotted}
+.pick{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:baseline}
+.pk{font:600 .76rem var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);min-width:44px}
+.pick .tabs{flex:1 1 300px;min-width:0}
+.tabs.flows button{border-radius:8px}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <marker id="ah" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="mk" d="M0,0 L8,4 L0,8 z"/></marker>
+    <marker id="ah-res" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="5.5" markerHeight="5.5" orient="auto"><path class="mk-res" d="M0,0 L8,4 L0,8 z"/></marker>
+    <marker id="ah-mer" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="5.5" markerHeight="5.5" orient="auto"><path class="mk-mer" d="M0,0 L8,4 L0,8 z"/></marker>
+    <marker id="ah-skp" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="5.5" markerHeight="5.5" orient="auto"><path class="mk-skp" d="M0,0 L8,4 L0,8 z"/></marker>
+  </defs>
+</svg>
+
+<div class="page">
+
+<header>
+  <h1>Undo in a Shared Graph</h1>
+  <p>A command-line tool that keeps a graph in one SQLite file and can take back a subtree delete after other people and an ingest job have kept working on the same graph. This page covers the parts of the tool, how the graph sits in SQLite, and how undo decides what to bring back.</p>
+  <p>The situation it is built for: many people and several automated jobs edit one large graph at the same time. One person bulk-deletes a subtree of about 10,000 nodes. Twenty minutes later, after others have made several hundred edits in and around that area, the same person asks for the delete to be taken back. The tool is that design scoped down to one process, and the example below is the same story with six nodes.</p>
+</header>
+
+<section>
+  <h2><span class="n">1</span>Architecture</h2>
+  <p>There are no services to run. The task fixes the tool to one process and one database file, so the picture is one Python program with a few parts inside it, one SQLite file next to it, and two small helper programs outside it.</p>
+
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 946 470" role="img" aria-label="The command-line tool is one Python process. Its four commands call a loader, an operation applier, an undo engine and a dumper. All writes go through one store layer into one SQLite file that holds the live graph and the journal. A fixture generator makes the input files and a separate checker reads the outputs.">
+        <!-- left: fixture -->
+        <rect class="bx" x="16" y="40" width="150" height="40" rx="6"/>
+        <text class="tm" x="91" y="64" text-anchor="middle">gen_fixture.py</text>
+        <path class="ar" d="M91,80 V118" marker-end="url(#ah)"/>
+        <text class="ts" x="98" y="103">writes</text>
+        <rect class="bx" x="16" y="120" width="150" height="56" rx="6"/>
+        <text class="tm" x="91" y="143" text-anchor="middle">seed.jsonl</text>
+        <text class="tm" x="91" y="162" text-anchor="middle">ops.jsonl</text>
+        <path class="ar" d="M166,148 H228" marker-end="url(#ah)"/>
+        <text class="ts" x="197" y="141" text-anchor="middle">inputs</text>
+
+        <!-- process -->
+        <rect class="grp" x="230" y="20" width="500" height="244" rx="10"/>
+        <text class="tb" x="246" y="44">graphundo</text>
+        <text class="ts" x="318" y="44">one Python process, standard library only</text>
+
+        <rect class="bx" x="242" y="58" width="80" height="34" rx="6"/><text class="tm" x="282" y="79" text-anchor="middle">load</text>
+        <rect class="bx" x="341" y="58" width="80" height="34" rx="6"/><text class="tm" x="381" y="79" text-anchor="middle">apply</text>
+        <text class="ts" x="480" y="79" text-anchor="middle">four commands</text>
+        <rect class="bx" x="539" y="58" width="80" height="34" rx="6"/><text class="tm" x="579" y="79" text-anchor="middle">undo</text>
+        <rect class="bx" x="638" y="58" width="80" height="34" rx="6"/><text class="tm" x="678" y="79" text-anchor="middle">dump</text>
+
+        <path class="ar" d="M282,92 V118" marker-end="url(#ah)"/>
+        <path class="ar" d="M381,92 V118" marker-end="url(#ah)"/>
+        <path class="ar" d="M579,92 V118" marker-end="url(#ah)"/>
+        <path class="ar" d="M678,92 V118" marker-end="url(#ah)"/>
+
+        <rect class="bx" x="242" y="120" width="80" height="48" rx="6"/><text class="t" x="282" y="148" text-anchor="middle">Loader</text>
+        <rect class="bx" x="341" y="120" width="80" height="48" rx="6"/><text class="t" x="381" y="141" text-anchor="middle">Operation</text><text class="t" x="381" y="156" text-anchor="middle">applier</text>
+        <rect class="bx" x="440" y="120" width="80" height="48" rx="6"/><text class="t" x="480" y="141" text-anchor="middle">Tag</text><text class="t" x="480" y="156" text-anchor="middle">propagator</text>
+        <rect class="bx" x="539" y="120" width="80" height="48" rx="6"/><text class="t" x="579" y="141" text-anchor="middle">Undo</text><text class="t" x="579" y="156" text-anchor="middle">engine</text>
+        <rect class="bx" x="638" y="120" width="80" height="48" rx="6"/><text class="t" x="678" y="148" text-anchor="middle">Dumper</text>
+
+        <path class="ar" d="M421,144 H438" marker-end="url(#ah)"/>
+        <path class="ar" d="M539,144 H522" marker-end="url(#ah)"/>
+
+        <path class="ar" d="M282,168 V202" marker-end="url(#ah)"/>
+        <path class="ar" d="M381,168 V202" marker-end="url(#ah)"/>
+        <path class="ar" d="M480,168 V202" marker-end="url(#ah)"/>
+        <path class="ar" d="M579,168 V202" marker-end="url(#ah)"/>
+        <path class="ar" d="M678,168 V202" marker-end="url(#ah)"/>
+
+        <rect class="bx" x="242" y="204" width="476" height="46" rx="6"/>
+        <text class="tb" x="480" y="223" text-anchor="middle">Store</text>
+        <text class="ts" x="480" y="240" text-anchor="middle">one transaction per step · counts writes for CRASH_AFTER</text>
+
+        <path class="ar" d="M480,250 V300" marker-end="url(#ah)"/>
+        <text class="ts" x="488" y="286">SQL</text>
+
+        <!-- db -->
+        <rect class="grp" x="230" y="302" width="500" height="152" rx="10"/>
+        <text class="tb" x="246" y="326">graph.db</text>
+        <text class="ts" x="306" y="326">one SQLite file</text>
+        <rect class="sub" x="246" y="340" width="226" height="98" rx="6"/>
+        <text class="tb" x="258" y="361">Live graph</text>
+        <text class="tm" x="258" y="382">nodes</text>
+        <text class="tm" x="258" y="400">edges</text>
+        <text class="ts" x="258" y="425">what dump prints</text>
+        <rect class="sub" x="488" y="340" width="226" height="98" rx="6"/>
+        <text class="tb" x="500" y="361">Journal</text>
+        <text class="tm" x="500" y="382">ops · field_writes</text>
+        <text class="tm" x="500" y="398">edge_removals</text>
+        <text class="tm" x="500" y="414">removed_nodes · removed_edges</text>
+        <text class="ts" x="500" y="431">what undo reads and marks off</text>
+
+        <!-- right: outputs + checker -->
+        <path class="ar" d="M730,128 H804" marker-end="url(#ah)"/>
+        <text class="ts" x="767" y="108" text-anchor="middle">dump and</text>
+        <text class="ts" x="767" y="121" text-anchor="middle">undo print</text>
+        <rect class="bx" x="806" y="100" width="124" height="56" rx="6"/>
+        <text class="tm" x="868" y="123" text-anchor="middle">dump.jsonl</text>
+        <text class="tm" x="868" y="142" text-anchor="middle">report.json</text>
+        <path class="ar" d="M868,156 V228" marker-end="url(#ah)"/>
+        <text class="ts" x="875" y="196">reads</text>
+        <rect class="bx" x="806" y="230" width="124" height="40" rx="6"/>
+        <text class="tm" x="868" y="254" text-anchor="middle">checker.py</text>
+        <text class="ts" x="868" y="290" text-anchor="middle">separate program,</text>
+        <text class="ts" x="868" y="304" text-anchor="middle">shares no code</text>
+        <text class="t" x="868" y="330" text-anchor="middle">8 checks: pass / fail</text>
+      </svg>
+    </div>
+    <figcaption>Everything inside the grey box is one process. The operation applier and the undo engine both call the tag propagator. The checker also reads <code>seed.jsonl</code> and <code>ops.jsonl</code> so it can work out the expected result on its own.</figcaption>
+  </figure>
+
+  <h3>The parts and what each one does</h3>
+  <dl>
+    <dt>Python 3.11+</dt><dd>The language. Its standard library already includes SQLite (<code>sqlite3</code>), JSON, UUIDs and a command-line parser, so nothing has to be installed.</dd>
+    <dt>graph.db</dt><dd>One SQLite file. It holds the live graph and the journal. SQLite features used: transactions, foreign keys, unique indexes, and recursive queries.</dd>
+    <dt>load</dt><dd>Loader. Starts a new database file, replacing an old one. Reads <code>seed.jsonl</code> and fills the <code>nodes</code> and <code>edges</code> tables, then computes tags once for the whole graph.</dd>
+    <dt>apply</dt><dd>Operation applier. Runs <code>ops.jsonl</code> in order. Five kinds of operation: edit a node, add an edge, re-point an edge, ingest a node by name, delete a subtree. Each is described under "What can change the graph" below. When ingest creates a node, its id is built from the <code>op_id</code> and the name, so the same files give the same ids on every run. A delete moves what it removes into the journal. A <code>contains</code> arrow that would make a node its own ancestor is refused: the operation is stored as rejected and changes nothing, so a loop never gets into the graph. The same happens to an operation that names a node or arrow that is not live. An <code>op_id</code> names one operation: when it is already in the database, the line is skipped if it is that same operation, so applying a file again is harmless, and apply stops with an error before changing anything if it is a different one.</dd>
+    <dt>undo &lt;op_id&gt;</dt><dd>Undo engine. Walks the journal rows of one delete, decides restored, merged or skipped for each, writes the result, prints the report. It only accepts the <code>op_id</code> of a subtree delete. For any other operation, or an id that does not exist, it prints an error and writes nothing.</dd>
+    <dt>dump</dt><dd>Dumper. Prints every live node and edge as JSONL in one fixed order: node lines sorted by id, then edge lines sorted by from, to and type. Keys are always in the same order, inherited tags are sorted alphabetically, and own tags stay in the order they were written. Two equal graphs always print the same bytes. A node line holds id, qualified_name, type, description, owner, tags and effective_tags. An edge line holds from_id, to_id and type.</dd>
+    <dt>Tag propagator</dt><dd>One function: recompute inherited tags for a node and everything below it. Called by apply and by undo.</dd>
+    <dt>Store</dt><dd>A thin layer over <code>sqlite3</code>. Opens the file, turns foreign keys on, wraps each step in a transaction, and counts write statements so <code>CRASH_AFTER=&lt;n&gt;</code> can stop the process on the n-th one.</dd>
+    <dt>gen_fixture.py</dt><dd>Makes <code>seed.jsonl</code> and <code>ops.jsonl</code> from a seed number, and <code>planted.json</code>, which lists the nodes each planted case uses. Same seed, same files: every id and every choice comes from one random generator started with the seed. It checks its own output against the minimums the task sets and stops with an error if one is missed.</dd>
+    <dt>checker.py</dt><dd>A separate program that imports nothing from the tool. It replays the seed and the operations in plain Python dictionaries, then compares that with the dumps and the report for the eight checks.</dd>
+  </dl>
+
+  <h3>What can change the graph</h3>
+  <p>These are all the kinds of change the tool knows. Every one carries who made it: a person or the ingest.</p>
+  <dl>
+    <dt>Edit a node</dt><dd>By a person. Sets the description, the owner or the tags of one live node. A tag change is passed down to everything the node contains. An edit from ingest is refused, because ingest never sets description, owner or tags.</dd>
+    <dt>Add an arrow</dt><dd>By a person or by ingest. Adds a <code>contains</code> or <code>references</code> arrow between two live nodes.</dd>
+    <dt>Re-point an arrow</dt><dd>By a person or by ingest. Moves one end of an existing arrow to another node. It counts as two changes: the old arrow is taken away and the new one is added. Re-pointing a <code>contains</code> arrow moves a node under another parent.</dd>
+    <dt>Ingest a node by name</dt><dd>By ingest. If a live node already has the name, ingest updates its type. If none has it, ingest creates a node with a new id and puts it under its parent, if that parent is live. Ingest never sets description, owner or tags. An ingest from a person is refused: people do not create nodes in this tool, and only ingest sets the type.</dd>
+    <dt>Delete a subtree</dt><dd>By a person or by ingest. Removes a node, everything it contains, and every arrow that touches any of them. The inherited tags of the nodes that remain are then recomputed.</dd>
+    <dt>Undo a delete</dt><dd>By a person, with the <code>undo</code> command. It takes the <code>op_id</code> of one subtree delete. The undo is recorded as an operation of its own, so a redo can be added later.</dd>
+  </dl>
+  <p>Not part of the tool: a person creating a node, renaming a node, removing a single arrow without re-pointing it, undoing anything other than a subtree delete, redo, the 24-hour limit, and checking who is allowed to do what.</p>
+</section>
+
+<section>
+  <h2><span class="n">2</span>The graph inside SQLite</h2>
+  <p>SQLite stores tables, not graphs. A graph is two lists: a list of things and a list of arrows between them. So there are two tables. Each row in <code>nodes</code> is one box. Each row in <code>edges</code> is one arrow, written as "from this id, to that id, of this kind".</p>
+  <p>The running example is a small data catalog. Ids are shortened to <code>n1</code>, <code>n2</code> and so on; the real ones are UUIDs.</p>
+
+  <figure>
+    <div class="pair">
+      <div class="mini">
+        <svg viewBox="0 0 300 250" role="img" aria-label="Three boxes: sales contains sales.orders, which contains sales.orders.email. A fourth box, reports.daily, references sales.orders.">
+          <rect class="nb" x="20" y="16" width="150" height="38" rx="6"/><text class="nm" x="30" y="39">sales</text><text class="id" x="160" y="39" text-anchor="end">n1</text>
+          <rect class="nb" x="20" y="106" width="150" height="38" rx="6"/><text class="nm" x="30" y="129">sales.orders</text><text class="id" x="160" y="129" text-anchor="end">n2</text>
+          <rect class="nb" x="20" y="196" width="150" height="38" rx="6"/><text class="nm" x="30" y="219">sales.orders.email</text><text class="id" x="160" y="219" text-anchor="end">n3</text>
+          <rect class="nb" x="206" y="16" width="84" height="38" rx="6"/><text class="nm" x="214" y="33">reports</text><text class="nm" x="214" y="46">.daily</text><text class="id" x="282" y="39" text-anchor="end">n6</text>
+          <path class="edge" d="M95,54 V104" marker-end="url(#ah)"/><text class="ts" x="102" y="83">contains</text>
+          <path class="edge" d="M95,144 V194" marker-end="url(#ah)"/><text class="ts" x="102" y="173">contains</text>
+          <path class="edge r" d="M248,54 V125 H172" marker-end="url(#ah)"/><text class="ts" x="188" y="118">references</text>
+        </svg>
+      </div>
+      <div class="stack">
+        <div class="rows">
+          <table>
+            <caption>nodes: one row per box</caption>
+            <tr><th>id</th><th>qualified_name</th><th>type</th><th>owner</th><th>tags</th><th>effective_tags</th></tr>
+            <tr><td>n1</td><td>sales</td><td>schema</td><td></td><td>["finance"]</td><td>["finance"]</td></tr>
+            <tr><td>n2</td><td>sales.orders</td><td>table</td><td>asha</td><td>["pii"]</td><td>["finance","pii"]</td></tr>
+            <tr><td>n3</td><td>sales.orders.email</td><td>column</td><td>dana</td><td>["contact"]</td><td>["contact","finance","pii"]</td></tr>
+            <tr><td>n6</td><td>reports.daily</td><td>dashboard</td><td></td><td>[]</td><td>[]</td></tr>
+          </table>
+        </div>
+        <div class="rows">
+          <table>
+            <caption>edges: one row per arrow</caption>
+            <tr><th>from_id</th><th>to_id</th><th>type</th></tr>
+            <tr><td>n1</td><td>n2</td><td>contains</td></tr>
+            <tr><td>n2</td><td>n3</td><td>contains</td></tr>
+            <tr><td>n6</td><td>n2</td><td>references</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+    <figcaption>The drawing and the rows are the same information. The <code>description</code> column is left out of the table to keep it narrow.</figcaption>
+  </figure>
+
+  <h3>Tags that flow down from a parent</h3>
+  <p>The task calls them tags. A tag set on a parent is carried by every node below it. A node has two tag columns. <code>tags</code> is what someone set on that node. <code>effective_tags</code> is worked out: the node's own tags plus the effective tags of its parent. In the table above, <code>sales.orders.email</code> has one tag of its own and gets <code>pii</code> and <code>finance</code> from the two nodes above it. Only <code>contains</code> arrows carry tags. <code>references</code> arrows do not.</p>
+
+  <h3>Walking the graph</h3>
+  <p>"Everything under <code>sales.orders</code>" is found by a recursive query. Start with the root. Add every node it contains. Add every node those contain. Stop when a round adds nothing.</p>
+<pre><code>WITH RECURSIVE sub(id) AS (
+    SELECT :root_id
+  UNION
+    SELECT e.to_id
+    FROM edges e JOIN sub ON e.from_id = sub.id
+    WHERE e.type = 'contains'
+)
+SELECT id FROM sub;</code></pre>
+  <p>The query uses <code>UNION</code>, which drops a node it has already found, so the walk always ends. This matters if a <code>contains</code> loop ever exists, for example A contains B and B contains A. With <code>UNION ALL</code>, or with a depth counter inside the query, the walk goes round the loop for ever. The parents-first order that undo needs is worked out afterwards, by following the removed <code>contains</code> arrows down from the root.</p>
+  <p>The same walk, run downward from a node, is how the tag propagator refreshes <code>effective_tags</code> for a subtree: each node takes its own tags plus the already-refreshed tags of its parent.</p>
+
+  <h3>The tables</h3>
+<pre><code>CREATE TABLE nodes (
+  id              TEXT PRIMARY KEY,
+  qualified_name  TEXT NOT NULL UNIQUE,   <span class="cm">-- this table holds live nodes only</span>
+  type            TEXT NOT NULL,
+  description     TEXT,
+  owner           TEXT,
+  tags            TEXT NOT NULL,          <span class="cm">-- JSON list, set by people</span>
+  effective_tags  TEXT NOT NULL           <span class="cm">-- JSON list, worked out</span>
+);
+CREATE TABLE edges (
+  from_id TEXT NOT NULL REFERENCES nodes(id),
+  to_id   TEXT NOT NULL REFERENCES nodes(id),
+  type    TEXT NOT NULL CHECK (type IN ('contains','references')),
+  PRIMARY KEY (from_id, to_id, type)
+);
+CREATE UNIQUE INDEX one_parent ON edges(to_id) WHERE type = 'contains';</code></pre>
+  <p>Three rules are enforced by the database itself, so no code path can break them:</p>
+  <ul>
+    <li>Two live nodes cannot share a name (<code>UNIQUE</code> on <code>qualified_name</code>).</li>
+    <li>An arrow cannot point at a node that is not there (<code>REFERENCES nodes(id)</code>, with foreign keys switched on).</li>
+    <li>A node has at most one <code>contains</code> parent (the <code>one_parent</code> index). The graph of <code>contains</code> arrows is a tree. The task itself speaks of a subtree, a root and a node's parent. An operation that would give a node a second parent is stored as rejected.</li>
+  </ul>
+
+  <h3>The journal</h3>
+  <p>A deleted row is not thrown away. The delete moves it from the live tables into the journal tables, labelled with the delete's <code>op_id</code>. Undo later moves rows back one at a time and writes what it did next to each row.</p>
+  <dl>
+    <dt>ops</dt><dd>Every operation, with a running number, its <code>op_id</code>, its kind, the time it ran, whether a human or the ingest did it, and whether it was applied or rejected (with the reason). The running number is what "after the delete" means. Each undo is recorded here too, the first time it runs, as an operation of its own by a person (<code>undo:&lt;op_id&gt;</code>), so a later operation, or a redo, can tell what came after it.</dd>
+    <dt>removed_nodes</dt><dd>A copy of each node a delete removed: id, name, type, description, owner, tags, the id of its parent, and its place in parents-first order. For each of the three fields, and for the type, it also keeps who wrote it last and in which operation. Plus the columns undo fills in: <code>outcome</code>, <code>reason</code>, <code>merged_into</code>, <code>waiting_on</code>, the details the report prints for a merge, the undo that decided the row (<code>decided_by</code>), and for a merge what the live node held before undo changed it (<code>prior</code>), so a redo can put it back.</dd>
+    <dt>removed_edges</dt><dd>A copy of each arrow a delete removed, with its place in the order undo takes them. Plus <code>outcome</code>, <code>reason</code>, <code>waiting_on</code>, where the arrow points now if it was moved, and the undo that decided it.</dd>
+    <dt>field_writes</dt><dd>For each node and each of description, owner, tags and type: who wrote it last, and in which operation. This lets undo tell "empty because nobody wrote it" from "a person cleared it on purpose", and lets the type follow the same "most recent wins" rule.</dd>
+    <dt>edge_removals</dt><dd>Every arrow a person re-pointed away from its old target, with the number of the operation. Undo uses it so that it never puts back an arrow a person took away after the delete.</dd>
+  </dl>
+  <p><code>effective_tags</code> is never copied into the journal. It is always worked out again from what is live at that moment.</p>
+</section>
+
+<section>
+  <h2><span class="n">3</span>How undo works</h2>
+  <p>Pick a story, then step through it. The first story is the usual case. Each of the others shows one rarer situation from start to end. The rules behind all of them follow below.</p>
+
+  <div class="stepper">
+    <div class="pick"><span class="pk">Story</span><div class="tabs flows" id="flowtabs" role="tablist" aria-label="Stories"></div></div>
+    <div class="pick"><span class="pk">Step</span><div class="tabs" id="stagetabs" role="tablist" aria-label="Steps of the story"></div></div>
+    <p class="fnote" id="flowwhy"></p>
+    <figure>
+      <div class="scroll"><svg id="story" viewBox="0 0 696 396" role="img" aria-label="The example graph at the selected stage."></svg></div>
+      <div class="legend">
+        <span><i class="sw"></i>contains</span>
+        <span><i class="sw d"></i>references</span>
+        <span><i class="sw g"></i>removed, kept in the journal</span>
+        <span><i class="sw res"></i>restored</span>
+        <span><i class="sw mer"></i>merged</span>
+        <span><i class="sw skp"></i>skipped</span>
+        <span><b class="k-own">tag</b> set on this node</span>
+        <span>tag inherited from above</span>
+        <span><b class="k-new">blue</b> changed in this stage</span>
+        <span><b class="k-id">n7</b> id created after the delete</span>
+      </div>
+    </figure>
+    <div class="story" id="storytext" aria-live="polite"></div>
+    <div class="stack" id="fieldtable"></div>
+  </div>
+
+  <h3>What undo does, in order</h3>
+  <ol>
+    <li>Take the removed nodes of that delete from the journal, parents before children.</li>
+    <li>For each node, decide one of three outcomes (next figure), make the change, put the arrow from its parent back, and refresh the tags of that node and everything below it. All of that is one transaction.</li>
+    <li>Then take the remaining removed arrows (the <code>references</code> ones) and decide each one the same way.</li>
+    <li>Then retry any rows of earlier undos that were waiting on this delete.</li>
+    <li>Print the report from the journal rows.</li>
+  </ol>
+
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 760 274" role="img" aria-label="Decision for each removed node. If its name is used by a live node now, it is merged into that node. Otherwise, if its parent is live now, it is restored. Otherwise it is skipped.">
+        <text class="ts" x="175" y="18" text-anchor="middle">each removed node, parents first</text>
+        <path class="ar" d="M175,24 V44" marker-end="url(#ah)"/>
+        <rect class="bx" x="20" y="46" width="310" height="56" rx="6"/>
+        <text class="tb" x="175" y="70" text-anchor="middle">Is its name used by a live node right now?</text>
+        <text class="ts" x="175" y="88" text-anchor="middle">live means: has a row in the nodes table</text>
+        <path class="ar" d="M330,74 H450" marker-end="url(#ah)"/><text class="ts" x="390" y="67" text-anchor="middle">yes</text>
+        <rect class="o-mer" x="452" y="46" width="288" height="56" rx="6"/>
+        <text class="c-mer" x="466" y="70">merged</text><text class="ts" x="466" y="88">fold it into the node that holds the name</text>
+        <path class="ar" d="M175,102 V138" marker-end="url(#ah)"/><text class="ts" x="183" y="124">no</text>
+        <rect class="bx" x="20" y="140" width="310" height="56" rx="6"/>
+        <text class="tb" x="175" y="164" text-anchor="middle">Is its parent live right now?</text>
+        <text class="ts" x="175" y="182" text-anchor="middle">the parent itself, or the node the parent was merged into</text>
+        <path class="ar" d="M330,168 H450" marker-end="url(#ah)"/><text class="ts" x="390" y="161" text-anchor="middle">yes</text>
+        <rect class="o-res" x="452" y="140" width="288" height="56" rx="6"/>
+        <text class="c-res" x="466" y="164">restored</text><text class="ts" x="466" y="182">back with its old id and all its fields</text>
+        <path class="ar" d="M175,196 V238 H450" marker-end="url(#ah)"/><text class="ts" x="183" y="222">no</text>
+        <rect class="o-skp" x="452" y="212" width="288" height="52" rx="6"/>
+        <text class="c-skp" x="466" y="234">skipped</text><text class="ts" x="466" y="252">nowhere to attach it; reason: parent_not_live</text>
+      </svg>
+    </div>
+    <figcaption>The name is checked first. A node whose name is taken is always merged, wherever its parent is. A node that sat at the top level before the delete has no parent to check and is restored.</figcaption>
+  </figure>
+
+  <h3>Name clashes: two ids, one name</h3>
+  <p>Every node has two identities. The id is for the machine and is never reused. The name is for people and only has to be unique among live nodes. A delete frees the name. The ingest then creates a node with that name and a fresh id. At undo time two nodes claim <code>sales.orders</code>: <code>n2</code> in the journal and <code>n7</code> in the live graph. Only one can be live.</p>
+  <p>The live node keeps its id and the old node is folded into it, field by field. A field is filled from the journal only if no person has written that field on the live node. Anything a person wrote after the delete stays as they wrote it. Each field lands in one of three situations:</p>
+  <ul>
+    <li><b>Nobody wrote the field on the live node.</b> It is <b class="f">filled</b> from the journal. Example: the description of <code>sales.orders</code>.</li>
+    <li><b>A person wrote a different value.</b> The person's value is kept. The journal value is not applied and is listed in the report under <code>not_restored</code>. Example: owner ben instead of asha.</li>
+    <li><b>A person emptied the field on purpose.</b> It stays empty. This is why <code>field_writes</code> exists: an empty field that a person wrote is not the same as an empty field nobody touched. Example: the owner of the new <code>sales.orders.email</code>.</li>
+  </ul>
+  <p>Description, owner and tags all follow this rule, and each one is treated as a whole value. For tags that means the two lists are never mixed: either the old list is filled in, or the person's list stays. Tags differ from the other two fields in one way only. They have a second layer, the inherited tags, and that layer is never filled or kept. It is recomputed. The last step of the usual case above shows every field of both merged nodes; the table below is the first of them.</p>
+  <p>All three situations are one rule: for each field, the value a person wrote most recently wins. Normally everything in the journal was written before the delete, and everything a person wrote on the live node came after it. So the person's value on the live node wins, and a field nobody touched is filled. The rule also settles the rare case where the journal holds the newer value, shown in the story "The recreated node is deleted again". A value that came with the seed counts as written at the very start. A value put back by an earlier undo counts from when a person first wrote it, not from when that undo ran. When the journal value wins over a value someone had written on the live node, the report lists the value it replaced under <code>replaced</code>, so nothing changes without showing up in the report.</p>
+  <p><code>type</code> is not one of the three authored fields. It says what kind of thing the node is, such as table, view or column, and only ingest sets it. It follows the same idea with ingest as the writer: the type that ingest reported most recently wins. In a normal merge that is the type of the live node, and the report lists the old type when the two differ.</p>
+  <div class="rows">
+    <table>
+      <caption>merging n2 into n7</caption>
+      <tr><th>field</th><th>n2, in the journal</th><th>n7, live before undo</th><th>n7 after undo</th></tr>
+      <tr><td>description</td><td>One row per order</td><td>empty, nobody wrote it</td><td>One row per order (filled)</td></tr>
+      <tr><td>owner</td><td>asha</td><td>ben, written by a person</td><td>ben (kept)</td></tr>
+      <tr><td>tags</td><td>["pii"]</td><td>empty, nobody wrote it</td><td>["pii"] (filled)</td></tr>
+      <tr><td>id</td><td>n2</td><td>n7</td><td>n7; the report says n2 was merged into n7</td></tr>
+    </table>
+  </div>
+  <p>The old node is folded in. It is not brought back as a second node. Two live nodes cannot share a name, so a copy would need a different name, and the task's report has no outcome for that. A copy would also strand what undo is for: the description, owner and tags would sit on a node nobody uses, while the node that ingest keeps updating has none, and a tag such as <code>pii</code> would stop reaching the children. The cost is that the name is trusted. If a deleted name was reused for a different thing, the old values land on it. That is why only fields nobody wrote are filled, and why the report lists each one.</p>
+  <p>The live id stays because everything created after the delete already points at it: the arrows the ingest made, and any edit a person made. Every arrow that pointed at the old id is in the journal, so undo can re-aim those at the new id without touching anyone else's work. The mapping <code>n2 → n7</code> is saved in <code>removed_nodes.merged_into</code> and used for the children and arrows that come after.</p>
+  <p>This gives mixed subtrees, and that is correct. <code>sales.orders.total</code> was not recreated, so it returns with its old id <code>n4</code> under the new parent <code>n7</code>. The same rule applies whoever created the live node that holds the name. In this tool only ingest creates nodes. In the full system a person could also create one under an old name, and every field they filled in would be theirs and would stay.</p>
+
+  <h3>Arrows</h3>
+  <p>For each removed arrow, undo first works out where each end is now: the same node if it is live, the node it was merged into if it was merged, or nowhere if it was skipped or deleted since.</p>
+  <ul>
+    <li><b class="r">restored</b>: both ends are live under their old ids. The arrow goes back as it was. Example: <code>reports.daily → sales.orders.total</code>.</li>
+    <li><b class="m">merged</b>, reason <code>endpoint_merged</code>: one end was merged, so the arrow is put back pointing at the node that took over. Example: <code>reports.daily → n2</code> becomes <code>reports.daily → n7</code>.</li>
+    <li><b class="m">merged</b>, reason <code>already_present</code>: the same arrow already exists, because the ingest or a person made it. Nothing is added. Example: <code>sales → n2</code> is already there as <code>sales → n7</code>.</li>
+    <li><b class="s">skipped</b>, reason <code>endpoint_not_live</code>: one end is gone. Example: someone deleted <code>reports.daily</code> after the first delete. The row records which delete holds that node.</li>
+    <li><b class="s">skipped</b>, reason <code>child_has_other_parent</code>: a <code>contains</code> arrow whose child now sits under a different parent. The later placement wins. Example: a person moved the new <code>sales.orders</code> under <code>archive</code>.</li>
+    <li><b class="s">skipped</b>, reason <code>removed_by_person</code>: a person re-pointed this same arrow away after the delete. A re-point is two changes by that person, one arrow removed and one added, and undo keeps both. Example: a person moved the arrow of <code>reports.daily</code> from the new <code>sales.orders</code> to <code>sales.refunds</code>.</li>
+    <li><b class="s">skipped</b>, reason <code>would_create_cycle</code>: a <code>contains</code> arrow that would make a node its own ancestor. Example: the ingest recreated two names with the parent and child swapped.</li>
+  </ul>
+
+  <h3>When a later delete is in the way</h3>
+  <p>The command is <code>undo &lt;op_id&gt;</code>. The person names the delete they want back, so nothing forces the newest delete to be undone first. If an older delete is undone while a newer one still stands, some of its rows may need a node that the newer delete removed.</p>
+  <ul>
+    <li>Such a row is skipped, with reason <code>parent_not_live</code> or <code>endpoint_not_live</code>. A node only disappears through a delete, so undo can always find which delete holds it. The row records that delete in <code>waiting_on</code>.</li>
+    <li>When that later delete is undone, its undo first handles its own rows. Then it retries every row of earlier undos that waits on it, parents first, by the normal rules.</li>
+    <li>A retried row keeps its single entry in the report of its own delete, with the outcome updated.</li>
+    <li>Each retried row is its own step, so a crash during the retries is resumed like any other.</li>
+    <li>Undone newest first, nothing ever waits.</li>
+  </ul>
+  <p>The stories "A neighbour is deleted later" and "The parent is deleted later" show both cases.</p>
+
+  <h3>When inherited tags are worked out again</h3>
+  <p>One rule covers every case: inherited tags are never taken from the journal. After each step, undo recomputes <code>effective_tags</code> for the node it touched and for everything below that node as the graph stands now, inside the same transaction. The cases this covers:</p>
+  <ul>
+    <li><b>A parent's tags changed while the node was deleted.</b> A person added <code>gdpr</code> to <code>sales</code> after the delete. The restored <code>sales.orders.total</code> comes back carrying <code>gdpr</code>, which it never had before.</li>
+    <li><b>A merge puts tags back on a node that has children now.</b> <code>pii</code> returns to <code>sales.orders</code> (n7). It flows to the restored <code>total</code>, to the recreated <code>email</code>, and to <code>currency</code>, a column that was created after the delete and was never part of it.</li>
+    <li><b>A person set tags on the recreated node.</b> A person set the tags of the new <code>sales.orders.email</code> (n8) to <code>["hashed"]</code>. Those stay and the old <code>contact</code> is not added back. Anything below n8 would inherit <code>hashed</code>, not <code>contact</code>. The report lists <code>contact</code> under <code>not_restored</code>, so a dropped tag is visible.</li>
+    <li><b>The recreated node sits somewhere else.</b> If n7 is under a different parent now, it stays there. The old children restored under it inherit from the new place, not the old one.</li>
+    <li><b>A recreated node gets its old parent back.</b> If n7 had no parent and the old <code>contains</code> arrow is put back onto it, n7 and its whole subtree are recomputed.</li>
+    <li><b>A node is skipped.</b> Nothing changes, so nothing is recomputed.</li>
+  </ul>
+
+  <h3>Work done between the delete and the undo</h3>
+  <p>Everything other people and the ingest did after the delete falls into one of three kinds. Each kind has one rule.</p>
+  <ul>
+    <li><b>Independent.</b> It touched something the delete did not. Example: adding <code>gdpr</code> to <code>sales</code>, rewriting the description of <code>sales.refunds</code>, or creating <code>currency</code>. Rule: left exactly as it is. Restored nodes pick up its effects.</li>
+    <li><b>Conflicting.</b> It wrote something that undo would also write. Example: ben set the owner on the node that now holds the name <code>sales.orders</code>, and the journal says the owner was asha. The same goes for the new description and the new tags on <code>sales.orders.email</code>. Rule: the later human value wins, one field at a time. The old value is listed in the report and not applied.</li>
+    <li><b>Caused.</b> It happened only because the delete happened. Example: the ingest created n7 because no live node had that name. Rule: treat it as the same thing coming back. Fold the old node into it, keep the new id, re-aim the old arrows.</li>
+  </ul>
+  <p>Undo only adds rows and fills fields that no person has written since the delete. It never overwrites or removes anything a person did after the delete.</p>
+  <p>The same holds for edits that arrive while undo is running. Each step reads the live graph inside its own transaction, so an edit that lands between two steps is handled exactly like one that landed before undo began.</p>
+
+  <h3>Crashes, resuming, and running it twice</h3>
+  <ul>
+    <li><b>One step, one transaction.</b> A step is one removed node or one removed arrow. Its graph change, its tag refresh and its outcome in the journal are saved together or not at all.</li>
+    <li><b>Crash.</b> With <code>CRASH_AFTER=&lt;n&gt;</code> set, undo counts every INSERT, UPDATE and DELETE it runs. On the n-th one the process stops at once, without saving the step it is in, as a killed process would. SQLite discards the half-done step when the file is opened again. Steps that finished before it stay saved, so <code>CRASH_AFTER=1</code> saves nothing: the first write is inside the first transaction. Only <code>undo</code> reads the variable.</li>
+    <li><b>Resume.</b> The next run skips every journal row that already has an outcome and carries on with the first one that does not. Each decision looks only at the live graph, so the resumed run makes the same decisions as an uninterrupted one.</li>
+    <li><b>A dump in between.</b> A node goes in before its arrows, and the database refuses an arrow to a missing node. A dump taken after a crash shows a smaller graph that is still whole, with correct tags.</li>
+    <li><b>Run it twice.</b> The second run finds an outcome on every row, writes nothing, and prints the same report.</li>
+  </ul>
+
+  <h3>How long undo stays available</h3>
+  <p>The rules above give a correct result however much time has passed. More edits only mean more rows come back as merged or skipped. What gets worse with time is how much of the result the person asking can predict.</p>
+  <p>The scenario gives one measured rate: several hundred edits in twenty minutes around a delete of 10,000 nodes. Taking 300 edits, that is 15 a minute.</p>
+  <div class="rows">
+    <table>
+      <caption>edits by others at the scenario's rate</caption>
+      <tr><th>time since the delete</th><th>edits by others</th><th>compared with the 10,000 deleted nodes</th></tr>
+      <tr><td>20 minutes</td><td>300</td><td>3%</td></tr>
+      <tr><td>1 hour</td><td>900</td><td>9%</td></tr>
+      <tr><td>4 hours</td><td>3,600</td><td>36%</td></tr>
+      <tr><td>8 hours, one working day</td><td>7,200</td><td>72%</td></tr>
+      <tr><td>about 11 hours</td><td>10,000</td><td>100%</td></tr>
+    </table>
+  </div>
+  <p>The last column is a ceiling. It assumes every edit lands on a different deleted node. At twenty minutes nearly everything comes back as it was. After about one working day of edits there are as many edits as deleted nodes. From there undo no longer takes back one action. It merges a day of other people's work with an old copy of 10,000 nodes, and the report is too long for a person to review.</p>
+  <p><b>The limit is 24 hours after the delete.</b> A full day on the clock holds about one working day of edits, and it covers the usual late case: deleted in the evening, noticed the next morning. The value is subject to experimentation, because it rests on the one rate the scenario gives.</p>
+  <ul>
+    <li><b>Checked when undo starts.</b> Undo compares the current time with the time the delete was applied, stored in <code>ops</code>. Past 24 hours it refuses, changes nothing, and says why. The journal rows stay where they are.</li>
+    <li><b>An undo that has started can always finish.</b> A crashed run is resumed and a finished run prints its report again, whatever the clock says. Otherwise a crash close to the limit would leave the graph half restored.</li>
+    <li><b>The command-line tool does not enforce it.</b> The task puts retention out of scope, the operations in the fixture carry no real clock, and the checks expect undo to run on the fixture whenever it is called. The limit belongs to the full system.</li>
+  </ul>
+
+  <h3>The report for the example</h3>
+<pre><code>{
+  "op_id": "d1",
+  "nodes": [
+    {"id": "n2", "qualified_name": "sales.orders", "outcome": "merged",
+     "reason": "name_in_use", "merged_into": "n7",
+     "filled": ["description", "tags"], "kept_live": ["owner"], "not_restored": {"owner": "asha"}},
+    {"id": "n3", "qualified_name": "sales.orders.email", "outcome": "merged",
+     "reason": "name_in_use", "merged_into": "n8",
+     "filled": [], "kept_live": ["description", "owner", "tags"],
+     "not_restored": {"description": "Customer email", "owner": "dana", "tags": ["contact"]}},
+    {"id": "n4", "qualified_name": "sales.orders.total", "outcome": "restored"}
+  ],
+  "edges": [
+    {"from": "n1", "to": "n2", "type": "contains",   "outcome": "merged",   "reason": "already_present", "now": ["n1", "n7"]},
+    {"from": "n2", "to": "n3", "type": "contains",   "outcome": "merged",   "reason": "already_present", "now": ["n7", "n8"]},
+    {"from": "n2", "to": "n4", "type": "contains",   "outcome": "merged",   "reason": "endpoint_merged", "now": ["n7", "n4"]},
+    {"from": "n6", "to": "n2", "type": "references", "outcome": "merged",   "reason": "endpoint_merged", "now": ["n6", "n7"]},
+    {"from": "n6", "to": "n4", "type": "references", "outcome": "restored"}
+  ]
+}</code></pre>
+</section>
+
+<section>
+  <h2>The eight checks and what makes each one hold</h2>
+  <ol>
+    <li><b>No human change after the delete is lost.</b> Undo only inserts rows and fills fields with no human write since the delete, read from <code>field_writes</code>. The checker proves it by comparing a dump taken just before undo with the dump taken after: every value a person wrote is unchanged, every arrow a person added is still there, and no arrow a person moved away has come back.</li>
+    <li><b>Free name and live parent means restored.</b> This is the node decision in the figure above. The task says the parent must be live "at undo time". Here that means: live once undo has dealt with the parent, whether the parent was restored or was merged into the node that holds its name. The checker uses the same reading. From its own replay it works out which removed names are free and which parents are live, and expects each such node in the dump after undo with its old id, description, owner and tags.</li>
+    <li><b>No two live nodes share a name.</b> A clash becomes a merge before any insert, and the <code>UNIQUE</code> rule on the table backs it up. The checker counts the names in the dump after undo.</li>
+    <li><b>The report covers every removed node and arrow once.</b> The report is a printout of the journal rows of that delete. Each row has exactly one outcome. The checker builds the list of removed nodes and arrows from its own replay and matches it against the report: nothing missing, nothing twice. It also holds each outcome against the dump: a restored row is there under its old id, a merged row points at a live node, a skipped row is absent.</li>
+    <li><b>Inherited tags are correct.</b> They are recomputed from the live graph inside every step. The checker recomputes them from the own tags and the <code>contains</code> arrows in the dump, and compares.</li>
+    <li><b>Running undo twice gives the same dump.</b> The second run has no row left to decide, so it writes nothing. The run script runs undo again, and the checker expects the same dump and the same report, byte for byte.</li>
+    <li><b>A crashed undo can be finished.</b> One transaction per step, and foreign keys rule out arrows to missing nodes. The task does not say which n, so it has to hold for any. The run script copies the database after apply and runs a clean undo on one copy and crashed undos on others: at the first write, at a few in the middle, at the last, at a number larger than the total, and with two and three crashes in a row. The checker compares what they left.</li>
+    <li><b>Under 60 seconds.</b> The scenario is about 5,000 rows and a few thousand small transactions. The run script times the scenario and the whole run, and the checker fails if either goes over. The work grows in step with the number of removed rows, one small transaction each, so the 10,000-node case follows the same path.</li>
+  </ol>
+</section>
+
+<section>
+  <h2>The fixture</h2>
+  <p>The fixture is the test data. <code>gen_fixture.py</code> writes it from a seed number, and the same seed always gives the same files.</p>
+  <dl>
+    <dt>seed.jsonl</dt><dd>The starting graph: about 5,000 nodes and edges.</dd>
+    <dt>ops.jsonl</dt><dd>The operations, in order. First, one subtree delete of at least 500 nodes. Then about 300 operations of mixed kinds.</dd>
+    <dt>planted.json</dt><dd>Which nodes each planted case below uses, so the checker can find each case and test it. The eight checks do not use it.</dd>
+  </dl>
+  <p>One line of each kind, with ids shortened:</p>
+<pre><code><span class="cm"># seed.jsonl</span>
+{"kind": "node", "id": "n2", "qualified_name": "sales.orders", "type": "table", "description": "One row per order", "owner": "asha", "tags": ["pii"]}
+{"kind": "edge", "from_id": "n1", "to_id": "n2", "type": "contains"}
+
+<span class="cm"># ops.jsonl</span>
+{"op_id": "d1",   "actor": "human",  "kind": "delete_subtree", "root_id": "n2"}
+{"op_id": "op17", "actor": "ingest", "kind": "ingest_node",    "qualified_name": "sales.orders", "type": "table", "parent": "sales"}
+{"op_id": "op31", "actor": "human",  "kind": "edit_node",      "id": "n7", "set": {"owner": "ben"}}
+{"op_id": "op40", "actor": "human",  "kind": "add_edge",       "from_id": "n6", "to_id": "n5", "type": "references"}
+{"op_id": "op52", "actor": "human",  "kind": "repoint_edge",   "from_id": "n6", "to_id": "n7", "type": "references", "new_to_id": "n5"}</code></pre>
+  <p>The seed holds no inherited tags. They are worked out when the seed is loaded. An ingest line carries no id, because the tool makes it. Since that id follows from the <code>op_id</code> and the name, the generator can work it out too and use it in later lines, as <code>op31</code> does with <code>n7</code>.</p>
+  <p>The task sets minimums for those operations. After writing the files the generator counts each one, prints the counts, and stops with an error if any is not met:</p>
+  <ul>
+    <li>The delete removes at least 500 nodes.</li>
+    <li>People edit nodes next to the deleted area: its parent, its siblings, and nodes that referenced it.</li>
+    <li>Edges are re-pointed to other nodes.</li>
+    <li>An ingest run recreates at least 50 of the deleted names under new ids.</li>
+    <li>People edit at least 5 of those recreated nodes.</li>
+  </ul>
+  <p>Random data alone might never reach a rare rule, so the generator also plants one case for each of these:</p>
+  <ul>
+    <li>A recreated node that nobody edited. Its three fields are filled from the journal.</li>
+    <li>A recreated node where a person changed a field. The person's value is kept.</li>
+    <li>A recreated node where a person emptied a field. It stays empty.</li>
+    <li>A recreated node that a person moved under another parent. The old parent arrow is skipped.</li>
+    <li>A deleted name that was not recreated, under a parent that was. It is restored with its old id under the new parent.</li>
+    <li>A recreated child whose parent name was not recreated. It gets its old parent back.</li>
+    <li>A reference that a person re-pointed onto a recreated node. The old arrow is counted as already present.</li>
+    <li>A reference that a person re-pointed away from a recreated node. The old arrow is skipped.</li>
+    <li>A recreated node whose type differs from the old one. The newer type stays and the report lists the old one.</li>
+    <li>A tag that a person added above the deleted root. Restored nodes come back carrying it.</li>
+  </ul>
+  <h3>The second, small fixture</h3>
+  <p>The task's scenario has one subtree delete, so it never reaches the rules for two deletes. A second, small set of test data covers them. It is the six-node graph from the stories above, with one operations file per story, so each story is also the description of a test.</p>
+  <dl>
+    <dt>seed.jsonl</dt><dd>The six nodes and six arrows the stories start from.</dd>
+    <dt>ops_a.jsonl</dt><dd>Story "A neighbour is deleted later". d1 deletes <code>sales.orders</code>, then d2 deletes <code>reports.daily</code>.</dd>
+    <dt>ops_b.jsonl</dt><dd>Story "The parent is deleted later". d1 deletes <code>sales.orders</code>, then d2 deletes <code>sales</code>.</dd>
+    <dt>ops_c.jsonl</dt><dd>Story "The recreated node is deleted again". d1 deletes <code>sales.orders</code>. Ingest recreates it as a view. A person sets its owner to ben. d2 deletes the recreated node.</dd>
+    <dt>ops_d.jsonl</dt><dd>Story "The usual case". d1 deletes <code>sales.orders</code>. A person adds <code>gdpr</code> to <code>sales</code> and rewrites the description of <code>sales.refunds</code>. Ingest recreates <code>sales.orders</code> and <code>sales.orders.email</code> and adds <code>sales.orders.currency</code>. People edit the two recreated nodes as in the story.</dd>
+    <dt>ops_e.jsonl</dt><dd>Story "A person moved an arrow away". d1 deletes <code>sales.orders</code>. Ingest recreates it and its arrow from <code>reports.daily</code>. A person re-points that arrow to <code>sales.refunds</code>.</dd>
+    <dt>ops_f.jsonl</dt><dd>Story "The recreated node was moved". People do not create nodes, so first the ingest creates <code>archive</code> and a person gives it the tag <code>old</code>. d1 deletes <code>sales.orders</code>, ingest recreates it, and a person moves it under <code>archive</code>.</dd>
+  </dl>
+  <p>The content is fixed, with no random choices. <code>gen_fixture.py --small</code> writes the seven files. Files a, b and c have two deletes. Each is run twice from a fresh load: once undoing d1 and then d2, and once undoing d2 and then d1. Files d, e and f have one delete and are run once. That makes nine runs. The checker tests each one for:</p>
+  <ul>
+    <li><b>Files d, e and f.</b> The report of undo d1 is the one the story shows, and the graph ends as the story's last picture. For file d that report is the example report above, word for word.</li>
+    <li><b>Files a and b, both orders.</b> After both undos the dump is the same, byte for byte, as the dump taken right after load. Everything that was deleted is back and nothing else changed.</li>
+    <li><b>Files a and b, d1 undone first.</b> After the first undo the blocked rows are skipped and name d2 in <code>waiting_on</code>. After the second undo, the report of d1 shows them restored.</li>
+    <li><b>File c, both orders.</b> One live <code>sales.orders</code>, owner ben, type view, the old description and the tag <code>pii</code>, with <code>sales.orders.total</code> under it. The two orders differ in one thing only: the node that came back first keeps its id.</li>
+    <li><b>Every undo in every run.</b> The checks that do not depend on the big scenario: no human change lost, no shared name, every removed row in the report once, inherited tags correct, and a second call that changes nothing.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>What the repository holds</h2>
+  <dl>
+    <dt>README.md</dt><dd>The exact commands to generate the fixture, run the scenario and run the checker.</dd>
+    <dt>DECISIONS.md</dt><dd>One page. The rule chosen for independent, conflicting and caused edits. What the model proposed that was rejected, and why. What was verified by hand.</dd>
+    <dt>AI sessions</dt><dd>Every AI session used for the work, complete and unedited, as a share link, an exported transcript or a log file. A session from a tool that cannot export is described in DECISIONS.md.</dd>
+  </dl>
+  <h3>The scenario, in order</h3>
+<pre><code>python gen_fixture.py --seed 7 --out fixture
+python graphundo.py load fixture/seed.jsonl
+python graphundo.py apply fixture/ops.jsonl
+python graphundo.py dump &gt; before.jsonl
+python graphundo.py undo &lt;op_id of the delete&gt; &gt; report.json
+python graphundo.py dump &gt; after.jsonl
+python checker.py fixture before.jsonl after.jsonl report.json</code></pre>
+  <p>The dump before undo is there for check 1. "No human change is lost" can only be shown by holding what people had written just before undo against what is there just after. A run script wraps these commands. It then calls undo a second time for check 6, repeats the run with <code>CRASH_AFTER</code> set for check 7, times the whole thing for check 8, and then runs the nine runs of the small second fixture. On the three files above the checker runs the checks that need only one undo. The checker never runs the tool itself; for checks 6, 7 and 8 it reads what the run script saved:</p>
+<pre><code>python run_scenario.py --fixture fixture --small fixture_small --out run
+python checker.py fixture --small fixture_small --run run</code></pre>
+</section>
+
+</div>
+
+<script>
+(function(){
+  var W=164,H=74;
+  var slot={archive:[8,24],sales:[352,24],orders:[180,152],refunds:[524,152],email:[8,280],total:[180,280],currency:[352,280],daily:[524,280]};
+  var full={archive:'archive',sales:'sales',orders:'sales.orders',refunds:'sales.refunds',email:'sales.orders.email',total:'sales.orders.total',currency:'sales.orders.currency',daily:'reports.daily'};
+  var paths={
+    'sales>orders':'M434,98 L262,152','sales>refunds':'M434,98 L606,152',
+    'orders>email':'M262,226 L90,280','orders>total':'M262,226 L262,280','orders>currency':'M262,226 L434,280',
+    'daily>orders':'M548,280 L344,189','daily>total':'M606,354 V382 H262 V354',
+    'daily>refunds':'M606,280 L606,226','archive>orders':'M90,98 L180,175'
+  };
+  function n(s,id,owner,desc,own,inh,o){o=o||{};o.s=s;o.id=id;o.owner=owner;o.desc=desc;o.own=own;o.inh=inh;return o}
+  function e(a,b,k,st){return {a:a,b:b,k:k,st:st||'live'}}
+  function tbl(caption,head,rows,note){
+    var h='<div class="rows"><table><caption>'+caption+'</caption><tr>'+head.map(function(c){return '<th>'+c+'</th>'}).join('')+'</tr>';
+    rows.forEach(function(r){
+      var start=r[0]!=='';
+      h+='<tr>'+r.map(function(c,i){
+        var cls=[];
+        if(start) cls.push('grp-start');
+        if(i===r.length-1 && r.length>5) cls.push('wrap');
+        return '<td'+(cls.length?' class="'+cls.join(' ')+'"':'')+'>'+c+'</td>';
+      }).join('')+'</tr>';
+    });
+    h+='</table></div>';
+    if(note) h+='<p class="fnote">'+note+'</p>';
+    return h;
+  }
+
+  /* ---- building blocks shared by the extra stories ---- */
+  function mk(s,id,owner,desc,own,inh){
+    return function(o){var d=n(s,id,owner,desc,own.slice(),inh.slice(),{});if(o){for(var k in o)d[k]=o[k]}return d};
+  }
+  var S=mk('sales','n1',null,'Sales schema',['finance'],[]),
+      O=mk('orders','n2','asha','One row per order',['pii'],['finance']),
+      R=mk('refunds','n5',null,'One row per refund',[],['finance']),
+      M=mk('email','n3','dana','Customer email',['contact'],['pii','finance']),
+      T=mk('total','n4','asha','Order total, EUR',[],['pii','finance']),
+      D=mk('daily','n6',null,'Daily revenue',[],[]),
+      A=mk('archive','n10',null,'Retired data',['old'],[]);
+  var BASE=[['sales','orders','c'],['sales','refunds','c'],['orders','email','c'],['orders','total','c'],['daily','orders','r'],['daily','total','r']];
+  function ed(over,extra){
+    var out=[];
+    BASE.forEach(function(b){var k=b[0]+'>'+b[1],st=(over&&(k in over))?over[k]:'live';if(st)out.push(e(b[0],b[1],b[2],st))});
+    return out.concat(extra||[]);
+  }
+  function all(st,more){var o={};BASE.forEach(function(b){if(b[0]+'>'+b[1]!=='sales>refunds')o[b[0]+'>'+b[1]]=st});if(more){for(var k in more)o[k]=more[k]}return o}
+  var J1={state:'ghost',note:'in journal d1'},J2={state:'ghost',note:'in journal d2'},
+      RS={state:'restored',note:'restored'},SK={state:'skipped',note:'skipped, waits on d2'};
+  var startStage={tab:'Start',title:'Start: six nodes',text:['The same six nodes as in the usual case.'],table:'',
+    nodes:function(){return [S(),O(),R(),M(),T(),D()]},edges:function(){return ed()}};
+  var d1Stage={tab:'Delete d1',title:'Person A deletes the sales.orders subtree (d1)',
+    text:['Three nodes and five arrows move into the journal of d1. Two of those arrows start at <code>reports.daily</code>, and one comes down from <code>sales</code>.'],table:'',
+    nodes:function(){return [S(),R(),D(),O(J1),M(J1),T(J1)]},edges:function(){return ed(all('ghost'))}};
+
+  /* ---- story 1: the usual case ---- */
+  var usual=[
+   {tab:'Start',title:'Start: six nodes',
+    text:['Each box lists the name and id, then the owner, the description and the tags.',
+          '<code>sales.orders</code> has the owner asha, a description, and the tag <code>pii</code>. <code>sales.orders.email</code> has the owner dana and the tag <code>contact</code>.',
+          'Tags flow down the solid arrows, so <code>sales.orders.email</code> also inherits <code>pii</code> and <code>finance</code>. Owner and description do not flow anywhere. They belong to one node only.',
+          '<code>reports.daily</code> references the table and one column. References carry no tags.'],
+    table:'',
+    nodes:[n('sales','n1',null,'Sales schema',['finance'],[]),
+           n('orders','n2','asha','One row per order',['pii'],['finance']),
+           n('refunds','n5',null,'One row per refund',[],['finance']),
+           n('email','n3','dana','Customer email',['contact'],['pii','finance']),
+           n('total','n4','asha','Order total, EUR',[],['pii','finance']),
+           n('daily','n6',null,'Daily revenue',[],[])],
+    edges:[e('sales','orders','c'),e('sales','refunds','c'),e('orders','email','c'),e('orders','total','c'),e('daily','orders','r'),e('daily','total','r')]},
+
+   {tab:'Delete',title:'A person deletes the sales.orders subtree (operation d1)',
+    text:['The table, its two columns, and all five arrows touching them leave the live graph.',
+          'Nothing is thrown away. Three node rows and five arrow rows move into the journal, labelled <code>d1</code>. Each node row keeps its owner, description and own tags.',
+          'Inherited tags are not saved. They will be worked out again when the node comes back.'],
+    table:tbl('What the journal holds for d1',['id','qualified_name','owner','description','tags'],[
+      ['n2','sales.orders','asha','One row per order','["pii"]'],
+      ['n3','sales.orders.email','dana','Customer email','["contact"]'],
+      ['n4','sales.orders.total','asha','Order total, EUR','[]']]),
+    nodes:[n('sales','n1',null,'Sales schema',['finance'],[]),
+           n('refunds','n5',null,'One row per refund',[],['finance']),
+           n('daily','n6',null,'Daily revenue',[],[]),
+           n('orders','n2','asha','One row per order',['pii'],['finance'],{state:'ghost',note:'in journal'}),
+           n('email','n3','dana','Customer email',['contact'],['pii','finance'],{state:'ghost',note:'in journal'}),
+           n('total','n4','asha','Order total, EUR',[],['pii','finance'],{state:'ghost',note:'in journal'})],
+    edges:[e('sales','refunds','c'),e('sales','orders','c','ghost'),e('orders','email','c','ghost'),e('orders','total','c','ghost'),e('daily','orders','r','ghost'),e('daily','total','r','ghost')]},
+
+   {tab:'Others keep working',title:'Work continues before anyone asks for undo',
+    text:['A person adds the tag <code>gdpr</code> to <code>sales</code> and rewrites the description of <code>sales.refunds</code>. Neither node was part of the delete.',
+          'An ingest run finds no live <code>sales.orders</code>, so it creates one with a new id, <code>n7</code>. The same happens for <code>sales.orders.email</code> (<code>n8</code>). It also adds a column that never existed, <code>sales.orders.currency</code> (<code>n9</code>). Ingest leaves owner, description and tags empty.',
+          'On the new <code>sales.orders</code> (n7) a person sets the owner to ben.',
+          'On the new <code>sales.orders.email</code> (n8) a person writes a new description, sets the tags to <code>hashed</code>, and records that the column has no owner.',
+          'Two nodes now claim each of those names, and their fields disagree. The table lists every field.'],
+    table:tbl('Two nodes claim each name',['name','field','old node, in the journal','new node, live','who wrote the live value'],[
+      ['sales.orders<br>n2 vs n7','description','One row per order','empty','nobody'],
+      ['','owner','asha','ben','a person, after the delete'],
+      ['','tags','["pii"]','empty','nobody'],
+      ['sales.orders.email<br>n3 vs n8','description','Customer email','Hashed customer email','a person, after the delete'],
+      ['','owner','dana','none','a person, who emptied it on purpose'],
+      ['','tags','["contact"]','["hashed"]','a person, after the delete']]),
+    nodes:[n('sales','n1',null,'Sales schema',['finance','gdpr'],[],{fresh:['gdpr']}),
+           n('refunds','n5',null,'Approved refunds only',[],['finance','gdpr'],{fresh:['gdpr'],chg:{desc:1}}),
+           n('daily','n6',null,'Daily revenue',[],[]),
+           n('orders','n7','ben',null,[],['finance','gdpr'],{newId:1,shadow:1,note:'old n2 in journal',chg:{owner:1}}),
+           n('email','n8',null,'Hashed customer email',['hashed'],['finance','gdpr'],{newId:1,shadow:1,note:'old n3 in journal',ownerSet:1,chg:{owner:1,desc:1},fresh:['hashed']}),
+           n('currency','n9',null,null,[],['finance','gdpr'],{newId:1}),
+           n('total','n4','asha','Order total, EUR',[],['pii','finance'],{state:'ghost',note:'in journal'})],
+    edges:[e('sales','orders','c'),e('sales','refunds','c'),e('orders','email','c'),e('orders','currency','c'),e('orders','total','c','ghost'),e('daily','orders','r','ghost'),e('daily','total','r','ghost')]},
+
+   {tab:'Undo',title:'undo d1',
+    text:['<code>sales.orders</code>: the name is held by <code>n7</code>, so old <code>n2</code> is <b class="m">merged</b> into it. The owner stays ben. The description and the tag <code>pii</code> were never written on n7, so they are filled in from <code>n2</code>.',
+          '<code>sales.orders.email</code>: old <code>n3</code> is <b class="m">merged</b> into <code>n8</code>. A person wrote all three fields on n8 after the delete, so all three stay: the new description, no owner, the tag <code>hashed</code>. Nothing from n3 is applied, and the report lists what was left out.',
+          '<code>sales.orders.total</code>: the name is free and its parent now lives on as <code>n7</code>, so it is <b class="r">restored</b> with its old id <code>n4</code>, its owner and its description.',
+          'Arrows: two <code>contains</code> arrows already exist and are counted as <b class="m">merged</b>. The arrow to <code>total</code> and the reference to the table are re-aimed at <code>n7</code>, also <b class="m">merged</b>. The reference to <code>total</code> is <b class="r">restored</b> unchanged.',
+          'Inherited tags are recomputed. <code>pii</code> flows from <code>n7</code> to <code>email</code>, <code>total</code> and <code>currency</code>. <code>total</code> picks up <code>gdpr</code>, which was added while it was gone.',
+          'The rewritten description of <code>sales.refunds</code> is untouched.'],
+    table:tbl('Field by field, after undo',['name','field','in the journal','live before undo','after undo','what happened'],[
+      ['sales.orders<br>n2 into n7','description','One row per order','empty','One row per order','<b class="f">filled</b>: nobody had written it'],
+      ['','owner','asha','ben','ben','<b>kept</b>: a person wrote it; asha is listed as not restored'],
+      ['','tags','["pii"]','empty','["pii"]','<b class="f">filled</b>: nobody had written it'],
+      ['','inherited tags','not saved','finance, gdpr','finance, gdpr','recomputed from <code>sales</code>'],
+      ['sales.orders.email<br>n3 into n8','description','Customer email','Hashed customer email','Hashed customer email','<b>kept</b>: a person wrote it'],
+      ['','owner','dana','none','none','<b>kept</b>: a person emptied it on purpose'],
+      ['','tags','["contact"]','["hashed"]','["hashed"]','<b>kept</b>: a person wrote it; the two lists are not mixed'],
+      ['','inherited tags','not saved','finance, gdpr','pii, finance, gdpr','recomputed: <code>pii</code> arrives from n7'],
+      ['sales.orders.total<br>n4','description','Order total, EUR','not live','Order total, EUR','<b class="r">restored</b> as it was'],
+      ['','owner','asha','not live','asha','<b class="r">restored</b> as it was'],
+      ['','tags','[]','not live','[]','<b class="r">restored</b> as it was'],
+      ['','inherited tags','not saved','not live','pii, finance, gdpr','recomputed: <code>gdpr</code> is new for this node']],
+      'Owner, description and own tags follow the same rule. Inherited tags are the only value that is always recomputed.'),
+    nodes:[n('sales','n1',null,'Sales schema',['finance','gdpr'],[]),
+           n('refunds','n5',null,'Approved refunds only',[],['finance','gdpr']),
+           n('daily','n6',null,'Daily revenue',[],[]),
+           n('orders','n7','ben','One row per order',['pii'],['finance','gdpr'],{newId:1,state:'merged',note:'merged ← n2',fresh:['pii'],chg:{desc:1}}),
+           n('email','n8',null,'Hashed customer email',['hashed'],['pii','finance','gdpr'],{newId:1,state:'merged',note:'merged ← n3',ownerSet:1,fresh:['pii']}),
+           n('total','n4','asha','Order total, EUR',[],['pii','finance','gdpr'],{state:'restored',note:'restored',fresh:['gdpr']}),
+           n('currency','n9',null,null,[],['pii','finance','gdpr'],{newId:1,fresh:['pii']})],
+    edges:[e('sales','refunds','c'),e('orders','currency','c'),e('sales','orders','c','mer'),e('orders','email','c','mer'),e('orders','total','c','mer'),e('daily','orders','r','mer'),e('daily','total','r','res')]}
+  ];
+
+  /* ---- story 2: a neighbour is deleted later (arrows wait) ---- */
+  var neighbour=[startStage,d1Stage,
+   {tab:'Delete d2',title:'Person B deletes reports.daily (d2)',
+    text:['A second delete, by someone else. Its journal holds one node, the dashboard.',
+          'The dashboard had no arrows left to remove. Its two arrows are in the journal of d1, because d1 removed them first.'],
+    table:'',
+    nodes:function(){return [S(),R(),D(J2),O(J1),M(J1),T(J1)]},edges:function(){return ed(all('ghost'))}},
+   {tab:'Undo d1',title:'Person A runs undo d1 while d2 still stands',
+    text:['The three nodes have free names and a live parent. All three are <b class="r">restored</b>, with their three <code>contains</code> arrows.',
+          'The two reference arrows need <code>reports.daily</code> at their other end, and it is not live. Both are <b class="s">skipped</b>, reason <code>endpoint_not_live</code>.',
+          'Undo looks up where that node went. It is in the journal of d2, so each skipped row records <code>waiting_on: d2</code>.'],
+    table:tbl('Rows of d1 that could not come back',['arrow','outcome','reason','waiting_on'],[
+      ['reports.daily → sales.orders','skipped','endpoint_not_live','d2'],
+      ['reports.daily → sales.orders.total','skipped','endpoint_not_live','d2']]),
+    nodes:function(){return [S(),R(),D(J2),O(RS),M(RS),T(RS)]},
+    edges:function(){return ed({'sales>orders':'res','orders>email':'res','orders>total':'res','daily>orders':'skp','daily>total':'skp'})}},
+   {tab:'Undo d2',title:'Person B runs undo d2',
+    text:['<code>reports.daily</code> is <b class="r">restored</b>. d2 has no arrows of its own to put back.',
+          'Undo then looks for rows of earlier undos that wait on d2. It finds the two arrows of d1 and tries them again. Both ends are live now, so both are <b class="r">restored</b>.',
+          'Without the waiting rule these two arrows would be lost for good. d2 never held them, and d1 had already finished.',
+          'Undone the other way round, d2 first and then d1, nothing has to wait.'],
+    table:'',
+    nodes:function(){return [S(),R(),O(),M(),T(),D(RS)]},
+    edges:function(){return ed({'daily>orders':'res','daily>total':'res'})}}
+  ];
+
+  /* ---- story 3: the parent is deleted later (nodes wait) ---- */
+  var parentGone=[startStage,d1Stage,
+   {tab:'Delete d2',title:'Person B deletes the sales subtree (d2)',
+    text:['<code>sales</code> and <code>sales.refunds</code> move into the journal of d2, with the arrow between them.',
+          '<code>sales.orders</code> is not in d2. It was already gone.'],
+    table:'',
+    nodes:function(){return [D(),S(J2),R(J2),O(J1),M(J1),T(J1)]},edges:function(){return ed(all('ghost',{'sales>refunds':'ghost'}))}},
+   {tab:'Undo d1',title:'Person A runs undo d1 while d2 still stands',
+    text:['<code>sales.orders</code>: its name is free, but its parent <code>sales</code> is not live. It is <b class="s">skipped</b>, reason <code>parent_not_live</code>, <code>waiting_on: d2</code>.',
+          'Its two columns: their parent was just skipped, so they are skipped the same way.',
+          'All five arrows are skipped, because at least one end of each is not live.',
+          'The graph does not change. The report says why, and which delete has to be undone first.'],
+    table:'',
+    nodes:function(){return [D(),S(J2),R(J2),O(SK),M(SK),T(SK)]},edges:function(){return ed(all('skp',{'sales>refunds':'ghost'}))}},
+   {tab:'Undo d2',title:'Person B runs undo d2',
+    text:['<code>sales</code> and <code>sales.refunds</code> are <b class="r">restored</b>.',
+          'Undo then retries the rows of d1 that wait on d2, parents first. <code>sales.orders</code> now has a live parent and is restored. Its columns follow, then all five arrows.',
+          'Inherited tags are recomputed as each node comes back.'],
+    table:'',
+    nodes:function(){return [D(),S(RS),R(RS),O(RS),M(RS),T(RS)]},edges:function(){return ed(all('res',{'sales>refunds':'res'}))}}
+  ];
+
+  /* ---- story 4: the recreated node is deleted again (most recent wins, type) ---- */
+  var X={'orders>email':0,'daily>orders':0,'daily>total':0};
+  function x(more){var o={};for(var k in X)o[k]=X[k];for(var j in more)o[j]=more[j];return o}
+  var N7ben={id:'n7',newId:1,owner:'ben',desc:null,own:[],inh:['finance'],ty:'view'};
+  function plus(a,b){var o={};for(var k in a)o[k]=a[k];for(var j in b)o[j]=b[j];return o}
+  var twice=[
+   {tab:'Start',title:'Start',
+    text:['<code>sales.orders</code> is a table owned by asha. In this story the box also shows the type, in front of the owner.'],table:'',
+    nodes:function(){return [S(),R(),O({ty:'table'}),T()]},edges:function(){return ed(x({}))}},
+   {tab:'Delete d1',title:'A person deletes the sales.orders subtree (d1)',
+    text:['<code>n2</code> and its column move into the journal of d1.'],table:'',
+    nodes:function(){return [S(),R(),O(plus(J1,{ty:'table'})),T(J1)]},edges:function(){return ed(x({'sales>orders':'ghost','orders>total':'ghost'}))}},
+   {tab:'Recreate',title:'Ingest recreates the name, a person edits it',
+    text:['Ingest creates <code>sales.orders</code> again as <code>n7</code>. The source now reports it as a view, not a table.',
+          'A person sets the owner of n7 to ben.'],table:'',
+    nodes:function(){return [S(),R(),O(plus(N7ben,{shadow:1,note:'old n2 in journal d1',chg:{owner:1,ty:1}})),T(J1)]},
+    edges:function(){return ed(x({'orders>total':'ghost'}))}},
+   {tab:'Delete d2',title:'A person deletes the recreated node (d2)',
+    text:['<code>n7</code> moves into the journal of d2. The name <code>sales.orders</code> is free again.',
+          'Two old versions of the same name now wait in two journals.'],table:'',
+    nodes:function(){return [S(),R(),O(plus(N7ben,{state:'ghost',note:'n7 in d2, n2 in d1'})),T(J1)]},
+    edges:function(){return ed(x({'sales>orders':'ghost','orders>total':'ghost'}))}},
+   {tab:'Undo d1',title:'undo d1',
+    text:['The name is free and the parent is live, so <code>n2</code> is <b class="r">restored</b> as it was: a table, owned by asha. Check 2 of the task requires this.',
+          '<code>sales.orders.total</code> comes back under it.'],table:'',
+    nodes:function(){return [S(),R(),O({ty:'table',state:'restored',note:'restored · n7 in d2'}),T(RS)]},
+    edges:function(){return ed(x({'sales>orders':'res','orders>total':'res'}))}},
+   {tab:'Undo d2',title:'undo d2',
+    text:['The name of <code>n7</code> is held by <code>n2</code>, so n7 is <b class="m">merged</b> into n2. n2 keeps its id.',
+          'Each field goes to whoever wrote it most recently. ben set the owner after asha did, so the owner becomes ben.',
+          'Nobody ever wrote a description or tags on n7, so those of n2 stay.',
+          'Type belongs to ingest. Ingest said view after it said table, so the type becomes view.'],
+    table:tbl('Field by field',['field','n2, live','n7, in the journal of d2','written last','after undo d2'],[
+      ['owner','asha','ben','on n7, by a person','ben'],
+      ['description','One row per order','empty, never written','on n2','One row per order'],
+      ['tags','["pii"]','empty, never written','on n2','["pii"]'],
+      ['type','table','view','on n7, by ingest','view']]),
+    nodes:function(){return [S(),R(),O({owner:'ben',ty:'view',state:'merged',note:'merged ← n7',chg:{owner:1,ty:1}}),T()]},
+    edges:function(){return ed(x({'sales>orders':'mer'}))}}
+  ];
+
+  /* ---- story 5: a person moved an arrow away ---- */
+  var N7={id:'n7',newId:1,owner:null,desc:null,own:[],inh:['finance'],shadow:1,note:'old n2 in journal'};
+  var moved=[startStage,d1Stage,
+   {tab:'Recreate',title:'Ingest recreates the table and its arrow',
+    text:['Ingest creates <code>sales.orders</code> again as <code>n7</code>, and also the arrow from <code>reports.daily</code> to it.'],table:'',
+    nodes:function(){return [S(),R(),D(),O(N7),M(J1),T(J1)]},
+    edges:function(){return ed({'orders>email':'ghost','orders>total':'ghost','daily>total':'ghost'})}},
+   {tab:'Re-point',title:'A person moves that arrow',
+    text:['A person re-points the arrow of <code>reports.daily</code> from <code>sales.orders</code> to <code>sales.refunds</code>.',
+          'A re-point is two changes by that person: one arrow removed, one arrow added. The removal is recorded in <code>edge_removals</code>.'],table:'',
+    nodes:function(){return [S(),R(),D(),O(N7),M(J1),T(J1)]},
+    edges:function(){return ed({'orders>email':'ghost','orders>total':'ghost','daily>total':'ghost','daily>orders':0},[e('daily','refunds','r')])}},
+   {tab:'Undo',title:'undo d1',
+    text:['Old <code>n2</code> is <b class="m">merged</b> into <code>n7</code>. Nobody wrote on n7, so owner, description and tags are filled in. The two columns are <b class="r">restored</b> under n7.',
+          'The old arrow <code>reports.daily → n2</code> would come back as <code>reports.daily → n7</code>. A person removed exactly that arrow after the delete, so undo leaves it out: <b class="s">skipped</b>, reason <code>removed_by_person</code>.',
+          'Putting it back would reverse what that person did, and check 1 of the task forbids that.',
+          'Nobody touched the arrow to <code>sales.orders.total</code>. It is <b class="r">restored</b>.'],
+    table:'',
+    nodes:function(){return [S(),R(),D(),O({id:'n7',newId:1,state:'merged',note:'merged ← n2',chg:{owner:1,desc:1},fresh:['pii']}),M(RS),T(RS)]},
+    edges:function(){return ed({'sales>orders':'mer','orders>email':'mer','orders>total':'mer','daily>orders':'skp','daily>total':'res'},[e('daily','refunds','r')])}}
+  ];
+
+  /* ---- story 6: the recreated node was moved under another parent ---- */
+  var elsewhere=[
+   {tab:'Start',title:'Start: one more node',
+    text:['The same graph, plus <code>archive</code>, which carries the tag <code>old</code>.'],table:'',
+    nodes:function(){return [A(),S(),O(),R(),M(),T(),D()]},edges:function(){return ed()}},
+   {tab:'Delete d1',title:'A person deletes the sales.orders subtree (d1)',
+    text:['Three nodes and five arrows move into the journal of d1.'],table:'',
+    nodes:function(){return [A(),S(),R(),D(),O(J1),M(J1),T(J1)]},edges:function(){return ed(all('ghost'))}},
+   {tab:'Move',title:'Ingest recreates the table, a person moves it',
+    text:['Ingest creates <code>sales.orders</code> again as <code>n7</code> under <code>sales</code>.',
+          'A person moves n7 under <code>archive</code>. It now inherits <code>old</code>, and no longer <code>finance</code>.'],table:'',
+    nodes:function(){return [A(),S(),R(),D(),O({id:'n7',newId:1,owner:null,desc:null,own:[],inh:['old'],shadow:1,note:'old n2 in journal',fresh:['old']}),M(J1),T(J1)]},
+    edges:function(){return ed(all('ghost',{'sales>orders':0}),[e('archive','orders','c')])}},
+   {tab:'Undo',title:'undo d1',
+    text:['Old <code>n2</code> is <b class="m">merged</b> into <code>n7</code>, which stays under <code>archive</code>.',
+          'The old arrow <code>sales → n2</code> would become <code>sales → n7</code>. n7 already has a parent that a person chose, so the arrow is <b class="s">skipped</b>, reason <code>child_has_other_parent</code>.',
+          'The two columns are <b class="r">restored</b> under n7. They follow the name, wherever it sits now.',
+          'Inherited tags come from the new place: <code>old</code> from <code>archive</code> and <code>pii</code> from n7. <code>finance</code> is no longer inherited.'],
+    table:'',
+    nodes:function(){return [A(),S(),R(),D(),
+      O({id:'n7',newId:1,inh:['old'],state:'merged',note:'merged ← n2',chg:{owner:1,desc:1},fresh:['pii']}),
+      M({inh:['pii','old'],state:'restored',note:'restored',fresh:['old']}),
+      T({inh:['pii','old'],state:'restored',note:'restored',fresh:['old']})]},
+    edges:function(){return ed({'sales>orders':'skp','orders>email':'mer','orders>total':'mer','daily>orders':'mer','daily>total':'res'},[e('archive','orders','c')])}}
+  ];
+
+  var flows=[
+    {name:'The usual case',why:'One delete, then other people and an ingest run keep working, then undo.',stages:usual},
+    {name:'A neighbour is deleted later',why:'A second delete removes a node that arrows of the first delete need.',stages:neighbour},
+    {name:'The parent is deleted later',why:'A second delete removes the parent of the first deleted subtree.',stages:parentGone},
+    {name:'The recreated node is deleted again',why:'Two old versions of one name end up in two journals. The most recent writer of each field wins.',stages:twice},
+    {name:'A person moved an arrow away',why:'A person re-points an arrow that undo would otherwise put back.',stages:moved},
+    {name:'The recreated node was moved',why:'A person moves the recreated node under another parent.',stages:elsewhere}
+  ];
+
+  function tagSpans(d){
+    if(!d.own.length && !d.inh.length) return '<tspan class="tg-none">no tags</tspan>';
+    var out=[],fresh=d.fresh||[];
+    d.own.forEach(function(t){out.push([t,'tg-own'+(fresh.indexOf(t)>=0?' tg-new':'')])});
+    d.inh.forEach(function(t){out.push([t,'tg-inh'+(fresh.indexOf(t)>=0?' tg-new':'')])});
+    return out.map(function(p,i){return '<tspan class="'+p[1]+'"'+(i?' dx="5"':'')+'>'+p[0]+'</tspan>'}).join('');
+  }
+  function drawNode(d){
+    var x=slot[d.s][0],y=slot[d.s][1],st=d.state||'live',chg=d.chg||{},o='';
+    if(d.shadow) o+='<rect class="ghostbox" x="'+(x-6)+'" y="'+(y-6)+'" width="'+W+'" height="'+H+'" rx="6"/>';
+    o+='<g class="node '+st+'"><rect class="nb" x="'+x+'" y="'+y+'" width="'+W+'" height="'+H+'" rx="6"/>';
+    o+='<text class="nm" x="'+(x+9)+'" y="'+(y+18)+'">'+full[d.s]+'</text>';
+    o+='<text class="id'+(d.newId?' idnew':'')+'" x="'+(x+W-9)+'" y="'+(y+18)+'" text-anchor="end">'+d.id+'</text>';
+    var ov=d.owner?'<tspan dx="4">'+d.owner+'</tspan>':'<tspan class="none" dx="4">'+(d.ownerSet?'none, on purpose':'none')+'</tspan>';
+    var ty=d.ty?'<tspan class="lb'+(chg.ty?' hot':'')+'">'+d.ty+' ·</tspan>':'';
+    o+='<text class="fl'+(chg.owner?' chg':'')+'" x="'+(x+9)+'" y="'+(y+33)+'">'+ty+'<tspan class="lb"'+(d.ty?' dx="4"':'')+'>owner</tspan>'+ov+'</text>';
+    o+='<text class="fl'+(chg.desc?' chg':'')+'" x="'+(x+9)+'" y="'+(y+47)+'">'+(d.desc?d.desc:'<tspan class="none">no description</tspan>')+'</text>';
+    o+='<text class="tg" x="'+(x+9)+'" y="'+(y+63)+'">'+tagSpans(d)+'</text></g>';
+    if(d.note) o+='<text class="note '+st+'" x="'+(x+2)+'" y="'+(y-(d.shadow?11:7))+'">'+d.note+'</text>';
+    return o;
+  }
+  var MK={res:'ah-res',mer:'ah-mer',skp:'ah-skp'};
+  function drawEdge(d){
+    return '<path class="edge '+d.k+' '+d.st+'" d="'+paths[d.a+'>'+d.b]+'" marker-end="url(#'+(MK[d.st]||'ah')+')"/>';
+  }
+  function val(v){return typeof v==='function'?v():v}
+
+  var svg=document.getElementById('story'),txt=document.getElementById('storytext'),ft=document.getElementById('fieldtable'),
+      flowtabs=document.getElementById('flowtabs'),stagetabs=document.getElementById('stagetabs'),why=document.getElementById('flowwhy');
+  var cur={f:0,s:0};
+  function buttons(list,sel,label){
+    return list.map(function(it,i){return '<button role="tab" data-i="'+i+'" aria-selected="'+(i===sel?'true':'false')+'">'+label(it,i)+'</button>'}).join('');
+  }
+  function render(){
+    var fl=flows[cur.f],s=fl.stages[cur.s];
+    flowtabs.innerHTML=buttons(flows,cur.f,function(it){return it.name});
+    stagetabs.innerHTML=buttons(fl.stages,cur.s,function(it,i){return (i+1)+' · '+it.tab});
+    why.textContent=fl.why;
+    svg.innerHTML=val(s.edges).map(drawEdge).join('')+val(s.nodes).map(drawNode).join('');
+    svg.setAttribute('aria-label',fl.name+', step '+(cur.s+1)+': '+s.title);
+    txt.innerHTML='<h4>'+s.title+'</h4><ul>'+s.text.map(function(t){return '<li>'+t+'</li>'}).join('')+'</ul>';
+    ft.innerHTML=s.table||'';
+  }
+  function pick(ev){var b=ev.target.closest('button');return b?+b.dataset.i:-1}
+  flowtabs.addEventListener('click',function(ev){var i=pick(ev);if(i<0)return;cur.f=i;cur.s=0;render()});
+  stagetabs.addEventListener('click',function(ev){var i=pick(ev);if(i<0)return;cur.s=i;render()});
+  render();
+})();
+</script>
+
+</body></html>

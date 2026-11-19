@@ -4,7 +4,8 @@ A command-line tool that keeps a graph of entities and relationships in one SQLi
 subtree delete after other people and an ingest job have kept editing the graph. Instead of rolling the
 graph back, undo puts back what the delete removed on top of the graph as it is now. For every removed
 node and arrow it reports one outcome: restored, merged or skipped. The rules it follows are in
-[DECISIONS.md](DECISIONS.md).
+[DECISIONS.md](DECISIONS.md), and the full design, with step-by-step stories, is in
+[docs/design.html](docs/design.html) (download it and open it in a browser).
 
 Python 3.11 or newer. Nothing to install: everything comes from the standard library.
 
