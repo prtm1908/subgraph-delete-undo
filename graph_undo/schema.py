@@ -1,4 +1,4 @@
-"""The tables of the database file: the live graph, and the journal undo reads and marks off."""
+"""The tables of the database file: the live graph, and the journal undo and redo read and mark off."""
 
 SCHEMA = """
 -- The live graph. dump prints these two tables and nothing else.
@@ -23,8 +23,10 @@ CREATE UNIQUE INDEX one_parent ON edges(to_id) WHERE type = 'contains';
 CREATE INDEX edges_by_to ON edges(to_id, type);
 
 -- Every operation, applied or rejected. seq is the running number: "after the delete" means a larger seq.
--- Each undo is logged here too, once, as op_id 'undo:<op_id of the delete>' with kind 'undo', by a person,
--- so a later operation (or a redo) can tell what came after it.
+-- Each undo and each redo is logged here too, once, with kind 'undo' or 'redo', by a person. Such an entry
+-- says which delete it is for (target) and which round it is: one undo and the redo that follows it are a
+-- round. Its op_id ('undo:<op_id>', 'redo:<op_id>') is only a label: nothing is read out of it. finished is
+-- set when its last step is saved, so the other command can tell a crashed run from a complete one.
 CREATE TABLE ops (
     seq        INTEGER PRIMARY KEY,
     op_id      TEXT NOT NULL UNIQUE,
@@ -33,8 +35,12 @@ CREATE TABLE ops (
     applied_at TEXT NOT NULL,
     status     TEXT NOT NULL CHECK (status IN ('applied', 'rejected')),
     reason     TEXT,
-    payload    TEXT NOT NULL
+    payload    TEXT NOT NULL,
+    target     TEXT,                       -- undo and redo entries: the op_id of the delete
+    round      INTEGER,                    -- undo and redo entries: 1 for the first undo and its redo
+    finished   INTEGER                     -- undo and redo entries: 0 while it runs, 1 once it is complete
 );
+CREATE INDEX ops_by_target ON ops(target) WHERE target IS NOT NULL;
 
 -- Who wrote each field of each node last, and in which operation (seq 0 = the seed).
 -- Tells "empty because nobody wrote it" from "a person cleared it on purpose".
@@ -75,9 +81,13 @@ CREATE TABLE removed_nodes (
     merged_into    TEXT,
     waiting_on     TEXT,                   -- the delete that has to be undone before this row can come back
     detail         TEXT,                   -- JSON for merged rows: filled, kept_live, not_restored, replaced
-    decided_by     TEXT,                   -- the undo that wrote the outcome ('undo:<op_id>'; a retry names a later one)
+    decided_by     INTEGER,                -- ops.seq of the undo that wrote the outcome (a retry names a later one)
     prior          TEXT,                   -- JSON for merged rows: {field: {value, write}} the live node held before
                                            -- undo changed it, so a redo can put it back
+    redo_outcome   TEXT CHECK (redo_outcome IN ('removed', 'kept', 'reverted', 'unchanged')),
+    redo_reason    TEXT,
+    redo_detail    TEXT,                   -- JSON: target, put_back, kept, deleted_by, waiting_on
+    redone_by      INTEGER,                -- ops.seq of the redo that wrote the redo outcome
     PRIMARY KEY (delete_op, id)
 );
 CREATE INDEX removed_nodes_by_id ON removed_nodes(id);
@@ -95,8 +105,15 @@ CREATE TABLE removed_edges (
     waiting_on TEXT,
     now_from   TEXT,                       -- where the arrow points now, once its ends were worked out
     now_to     TEXT,
-    decided_by TEXT,                       -- the undo that wrote the outcome
+    decided_by INTEGER,                    -- ops.seq of the undo that wrote the outcome
+    redo_outcome TEXT CHECK (redo_outcome IN ('removed', 'kept', 'unchanged')),
+    redo_reason  TEXT,
+    redo_detail  TEXT,                     -- JSON: was, deleted_by, waiting_on
+    redone_by    INTEGER,                  -- ops.seq of the redo that wrote the redo outcome
     PRIMARY KEY (delete_op, from_id, to_id, type)
 );
+CREATE INDEX removed_edges_by_now ON removed_edges(now_from, now_to, type) WHERE now_from IS NOT NULL;
+CREATE INDEX removed_edges_by_ends ON removed_edges(from_id, to_id, type);
+CREATE INDEX removed_nodes_by_target ON removed_nodes(merged_into) WHERE merged_into IS NOT NULL;
 CREATE INDEX removed_edges_waiting ON removed_edges(waiting_on) WHERE outcome = 'skipped';
 """

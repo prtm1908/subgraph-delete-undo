@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Break the undo on purpose, one way at a time, and show which checks catch each break.
+"""Break the undo and the redo on purpose, one way at a time, and show which checks catch each break.
 
     python3 mutation_check.py
 
 Each mutation is a small edit to a copy of this repository in a temporary directory. For every copy the
 script generates both fixtures, runs the scenario and runs the checker. A checker that passes a broken
-undo would prove nothing, so every mutation below must make at least one check fail. Exit status 0 when
-every mutation is caught. Takes about a minute.
+undo or redo would prove nothing, so every mutation below must make at least one check fail. Exit status 0
+when every mutation is caught. Takes a few minutes.
 """
 
 from __future__ import annotations
@@ -66,11 +66,49 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
     ],
     "skipped rows decided again on every run": [
         ("graph_undo/undo.py",
+         "    if not entry.finished:\n        await UndoRun(store, op_id, entry.seq).run()\n",
+         "    if True:\n        await UndoRun(store, op_id, entry.seq).run()\n"),
+        ("graph_undo/undo.py",
          "    if retrying_for is None:\n        return outcome is None",
          "    if retrying_for is None:\n        return outcome in (None, SKIPPED)"),
         ("graph_undo/undo.py",
          'where, params = "outcome IS NULL", (delete_op,)',
          "where, params = \"(outcome IS NULL OR outcome = 'skipped')\", (delete_op,)"),
+    ],
+    # ---- redo ----
+    "redo removes a node a person wrote on": [
+        ("graph_undo/redo.py", '            return "written_since_undo"\n', "            pass\n"),
+    ],
+    "redo puts back a field a person rewrote": [
+        ("graph_undo/redo.py",
+         "if field not in copied or current.get(field) != list(copied[field]):",
+         "if field not in copied:"),
+    ],
+    "redo leaves skipped rows waiting": [
+        ("graph_undo/redo.py",
+         'await self._close_node(self.op_id, node_id, UNCHANGED, "not_restored_by_undo", reset=True)',
+         'await self._close_node(self.op_id, node_id, UNCHANGED, "not_restored_by_undo", reset=False)'),
+    ],
+    "redo skips rows an earlier round marked": [
+        ("graph_undo/redo.py", 'PENDING = "(redone_by IS NULL OR redone_by != ?2)"', 'PENDING = "(redone_by IS NULL AND ?2 = ?2)"'),
+        ("graph_undo/redo.py", "if row is None or row[7] == self.redo_seq:", "if row is None or row[7] is not None:"),
+        ("graph_undo/redo.py", "if row is None or row[5] == self.redo_seq:", "if row is None or row[5] is not None:"),
+    ],
+    "redo accepted while the undo is unfinished": [
+        ("graph_undo/rounds.py", "    if not newest.finished:\n", "    if False:\n"),
+    ],
+    "tags not recomputed after redo puts tags back": [
+        ("graph_undo/redo.py",
+         '            if "tags" in put_back:\n                await refresh_subtree(store, target)\n',
+         "            pass\n"),
+    ],
+    "redo removes a node another undo merged into": [
+        ("graph_undo/redo.py", '            return "still_in_use"\n        return None', "            pass\n        return None"),
+    ],
+    "redo keeps a node with nothing attached": [
+        ("graph_undo/redo.py",
+         "            return True  # not an arrow this redo takes out\n",
+         "            return True  # not an arrow this redo takes out\n        return True\n"),
     ],
 }
 
@@ -111,8 +149,10 @@ async def mutate(name: str, edits: list[tuple[str, str, str]], work: Path, limit
             code, out = await run(target, step)
             if code != 0:
                 return name, [f"({step[0]} failed: {out.strip().splitlines()[-1] if out.strip() else code})"]
-        _, out = await run(target, CHECK)
+        code, out = await run(target, CHECK)
         caught = sorted({re.split(r"\s{2,}", line)[1] for line in out.splitlines() if line.startswith("FAIL")})
+        if code not in (0, 1):  # the checker itself stopped with an error: that is a fault in the checker
+            raise SystemExit(f"mutation_check: checker.py crashed on {name!r}: {out.strip().splitlines()[-1]}")
         return name, caught
 
 

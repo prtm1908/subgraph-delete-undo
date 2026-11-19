@@ -1,8 +1,9 @@
-"""The command line: load, apply, undo, dump.
+"""The command line: load, apply, undo, redo, dump.
 
     python3 graphundo.py [--db graph.db] load seed.jsonl
     python3 graphundo.py [--db graph.db] apply ops.jsonl
     python3 graphundo.py [--db graph.db] undo <op_id>      (reads CRASH_AFTER=<n>)
+    python3 graphundo.py [--db graph.db] redo <op_id>      (reads CRASH_AFTER=<n>)
     python3 graphundo.py [--db graph.db] dump
 
 The database path defaults to $GRAPHUNDO_DB, then graph.db in the current directory.
@@ -22,8 +23,10 @@ from .applier import Applier
 from .common import InputError
 from .dumper import dump
 from .loader import load
+from .redo import redo
+from .rounds import CommandError
 from .store import Store
-from .undo import UndoError, format_report, undo
+from .undo import format_report, undo
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -37,6 +40,7 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("load", help="create the database from a seed file").add_argument("seed")
     commands.add_parser("apply", help="apply operations in order").add_argument("ops")
     commands.add_parser("undo", help="undo one subtree delete and print the report").add_argument("op_id")
+    commands.add_parser("redo", help="take back the undo of one subtree delete and print the report").add_argument("op_id")
     commands.add_parser("dump", help="print the live graph as sorted JSONL")
     return parser
 
@@ -67,14 +71,17 @@ async def _run(args: argparse.Namespace) -> int:
 
     if not await asyncio.to_thread(os.path.isfile, args.db):
         raise InputError(f"no database at {args.db}; run load first")
-    crash_after = _crash_after() if args.command == "undo" else None  # only undo reads CRASH_AFTER
+    crash_after = _crash_after() if args.command in ("undo", "redo") else None  # only these read CRASH_AFTER
     store = await Store.open(args.db, crash_after=crash_after)
     try:
         if args.command == "apply":
             output = json.dumps(await Applier(store).apply_file(args.ops), indent=2) + "\n"
-        elif args.command == "undo":
-            output = format_report(await undo(store, args.op_id))
-            await asyncio.to_thread(_write, sys.stderr, f"graphundo: undo {args.op_id}: {store.writes} writes\n")
+        elif args.command in ("undo", "redo"):
+            command = undo if args.command == "undo" else redo
+            output = format_report(await command(store, args.op_id))
+            await asyncio.to_thread(
+                _write, sys.stderr, f"graphundo: {args.command} {args.op_id}: {store.writes} writes\n"
+            )
         else:
             output = await dump(store)
         await asyncio.to_thread(_write, sys.stdout, output)
@@ -87,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         return asyncio.run(_run(args))
-    except (InputError, UndoError) as exc:
+    except (InputError, CommandError) as exc:
         print(f"graphundo: error: {exc}", file=sys.stderr)
         return 1
     except BrokenPipeError:

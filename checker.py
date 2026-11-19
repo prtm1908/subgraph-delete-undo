@@ -27,6 +27,23 @@ Checks 6, 7 and 8 need the runs that run_scenario.py makes, so they are only don
 
 Plus the planted cases of the main fixture (planted.json), applying the operations file again, and the
 nine runs of the small fixture: one per story of the design, each held against what the story shows.
+
+Redo (the extension), with --run. For every redo, from the dump just before it, the dump just after it and
+its report:
+
+    R1  no human change lost             redo adds nothing; every value a person wrote after the undo is as
+                                         it was; a field only changes where the report says it was put back
+    R2  report accounts for every row    every node and arrow the delete removed exactly once; each outcome
+                                         agrees with the dumps; nothing left the graph without being reported
+    R3  graph whole                      names unique, no arrow to a missing node, effective_tags correct
+    R4  result as worked out here        the graph after redo is the one this checker works out on its own
+                                         from the dumps around the undo and the changes made since
+                                         (runs where one delete was undone)
+
+and for the main scenario: redo straight after undo gives the dump from before the undo, byte for byte; a
+second redo changes nothing; undo after redo gives the first undo's dump and report again; crashed redos
+finish to the same dump and report; a redo after a crashed undo, and an undo after a crashed redo, are
+refused. Then the thirteen redo stories of the small fixture, each held against what its story shows.
 Exit status 0 when every check passes.
 """
 
@@ -325,6 +342,173 @@ def merge_problems(
     return problems
 
 
+# ---- the checks for one redo ----------------------------------------------------------------------------
+
+FIELDS = ("type", *AUTHORED)
+NODE_OUTCOMES = ("removed", "kept", "reverted", "unchanged")
+EDGE_OUTCOMES = ("removed", "kept", "unchanged")
+
+
+def human_fields_of(ops: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    """(node, field) for every field a person set in these operations."""
+    return {
+        (op["id"], field)
+        for op in ops
+        if op.get("kind") == "edit_node" and op.get("actor") == "human"
+        for field in op.get("set", {})
+    }
+
+
+def predict_redo(u_before: Graph, u_after: Graph, before: Graph, human: set[tuple[str, str]]) -> Graph:
+    """The graph a redo must leave, worked out from dumps alone. For runs where one delete was undone.
+
+    u_before and u_after are the dumps around the undo, so their difference is what undo put back.
+    before is the dump just before the redo. A node undo put back leaves again unless a person wrote on it
+    since, an arrow that undo did not add touches it, or a child that undo put back stays. An arrow undo
+    added leaves unless it touches such a node that stays. A field undo changed goes back unless it was
+    changed again since.
+    """
+    put_nodes = set(u_after.nodes) - set(u_before.nodes)
+    put_edges = u_after.edges - u_before.edges
+    written = {node for node, _ in human}
+    touching: dict[str, list[Edge]] = defaultdict(list)
+    for edge in before.edges:
+        touching[edge[0]].append(edge)
+        touching[edge[1]].append(edge)
+    parent = before.parent_of()
+
+    def depth(node: str) -> int:
+        d = 0
+        while node in parent:
+            node, d = parent[node], d + 1
+        return d
+
+    stays: dict[str, bool] = {}
+    for node in sorted(put_nodes & set(before.nodes), key=depth, reverse=True):  # children first
+        stays[node] = (
+            node in written
+            or any(edge not in put_edges for edge in touching[node])
+            or any(stays.get(t, False) for f, t, kind in touching[node] if kind == "contains" and f == node)
+        )
+    gone = {node for node, stay in stays.items() if not stay}
+    nodes: dict[str, dict[str, Any]] = {}
+    for nid, node in before.nodes.items():
+        if nid in gone:
+            continue
+        fields = dict(node)
+        was, filled = u_before.nodes.get(nid), u_after.nodes.get(nid)
+        if was is not None and filled is not None:
+            for field in FIELDS:
+                if was[field] != filled[field] and node[field] == filled[field] and (nid, field) not in human:
+                    fields[field] = was[field]
+        nodes[nid] = fields
+    edges = set()
+    for edge in before.edges:
+        if edge[0] in gone or edge[1] in gone:
+            continue
+        if edge in put_edges and not (stays.get(edge[0], False) or stays.get(edge[1], False)):
+            continue
+        edges.add(edge)
+    return Graph(nodes, edges)
+
+
+def check_redo(
+    res: Results, scope: str, removed: dict[str, Any], removed_edges: set[Edge], before: Graph, after: Graph,
+    report: dict[str, Any], human: set[tuple[str, str]], around_undo: tuple[Graph, Graph] | None,
+) -> None:
+    # R1. Nothing a person did after the undo is lost or altered.
+    problems = [f"node {n} appeared" for n in sorted(set(after.nodes) - set(before.nodes))]
+    problems += [f"arrow {e} appeared" for e in sorted(after.edges - before.edges)]
+    for nid, field in sorted(human):
+        if nid in before.nodes and nid not in after.nodes:
+            problems.append(f"{nid} (written by a person after the undo) is gone")
+        elif nid in before.nodes and after.nodes[nid][field] != before.nodes[nid][field]:
+            problems.append(f"{nid}.{field}: {before.nodes[nid][field]!r} -> {after.nodes[nid][field]!r}")
+    put_back = {
+        (e.get("target"), field)
+        for e in report.get("nodes", []) + report.get("other_nodes", [])
+        if e.get("outcome") == "reverted"
+        for field in e.get("put_back", [])
+    }
+    for nid in sorted(set(after.nodes) & set(before.nodes)):
+        for field in ("qualified_name", *FIELDS):
+            if after.nodes[nid][field] != before.nodes[nid][field] and (nid, field) not in put_back:
+                problems.append(f"{nid}.{field} changed, and the report does not say it was put back")
+    res.add("R1 no human change lost", scope, problems, f"{len(human)} values a person wrote after the undo")
+
+    # R2. The report accounts for every removed node and arrow once, and agrees with the dumps.
+    problems = []
+    nodes, arrows = report.get("nodes", []), report.get("edges", [])
+    node_ids = Counter(e["id"] for e in nodes)
+    edge_keys = Counter((e["from"], e["to"], e["type"]) for e in arrows)
+    problems += [f"node {k} reported {n} times" for k, n in node_ids.items() if n != 1]
+    problems += [f"arrow {k} reported {n} times" for k, n in edge_keys.items() if n != 1]
+    problems += [f"node {k} missing from report" for k in sorted(set(removed) - set(node_ids))]
+    problems += [f"node {k} in report but not removed" for k in sorted(set(node_ids) - set(removed))]
+    problems += [f"arrow {k} missing from report" for k in sorted(removed_edges - set(edge_keys))]
+    problems += [f"arrow {k} in report but not removed" for k in sorted(set(edge_keys) - removed_edges)]
+    said_nodes: set[str] = set()
+    said_edges: set[Edge] = set()
+    for e in nodes + report.get("other_nodes", []):
+        outcome, nid = e.get("outcome"), e["id"]
+        if outcome not in NODE_OUTCOMES:
+            problems.append(f"node {nid}: outcome {outcome!r}")
+        elif outcome in ("kept", "unchanged") and not e.get("reason"):
+            problems.append(f"node {nid}: {outcome} without a reason")
+        elif outcome == "removed":
+            said_nodes.add(nid)
+            if nid not in before.nodes or nid in after.nodes:
+                problems.append(f"node {nid}: removed, but it was not live before or is still live")
+        elif outcome == "kept" and nid not in after.nodes:
+            problems.append(f"node {nid}: kept but not live")
+        elif outcome == "unchanged" and (nid in after.nodes) != (nid in before.nodes):
+            problems.append(f"node {nid}: unchanged, but it came or went")
+        elif outcome == "reverted":
+            was, now = before.nodes.get(e.get("target")), after.nodes.get(e.get("target"))
+            if was is None or now is None or not e.get("put_back"):
+                problems.append(f"node {nid}: reverted, but the target is not live or nothing was put back")
+            else:
+                problems += [f"node {nid}: kept {f}, but it changed" for f in e.get("kept", {}) if now[f] != was[f]]
+    for e in arrows + report.get("other_edges", []):
+        edge = (e["from"], e["to"], e["type"])
+        outcome = e.get("outcome")
+        if outcome not in EDGE_OUTCOMES:
+            problems.append(f"arrow {edge}: outcome {outcome!r}")
+        elif outcome in ("kept", "unchanged") and not e.get("reason"):
+            problems.append(f"arrow {edge}: {outcome} without a reason")
+        elif outcome == "removed":
+            live = (*e["was"], e["type"]) if e.get("was") else edge
+            said_edges.add(live)
+            if live not in before.edges or live in after.edges:
+                problems.append(f"arrow {edge}: removed, but {live} was not live before or is still live")
+        elif outcome == "kept":
+            live = (*e["now"], e["type"]) if e.get("now") else edge
+            if live not in after.edges:
+                problems.append(f"arrow {edge}: kept, but {live} is not live")
+    problems += [f"node {n} left the graph without being reported" for n in sorted(set(before.nodes) - set(after.nodes) - said_nodes)]
+    problems += [f"arrow {e} left the graph without being reported" for e in sorted(before.edges - after.edges - said_edges)]
+    res.add("R2 report accounts for every row once", scope, problems, f"{len(nodes)} nodes, {len(arrows)} arrows")
+
+    # R3. The graph stays whole.
+    problems = [f"{name} is used twice" for name in after.duplicate_names()]
+    problems += after.tag_problems() + [f"arrow {e} to a missing node" for e in after.dangling()]
+    res.add("R3 graph whole", scope, problems, f"{len(after.nodes)} live nodes, tags recomputed")
+
+    # R4. The result is the one worked out here, independently, from the dumps.
+    if around_undo is not None:
+        want = predict_redo(*around_undo, before, human)
+        problems = [f"node {n} should have left" for n in sorted(set(after.nodes) - set(want.nodes))][:3]
+        problems += [f"node {n} should have stayed" for n in sorted(set(want.nodes) - set(after.nodes))][:3]
+        problems += [
+            f"{n}.{f} is {after.nodes[n][f]!r}, expected {want.nodes[n][f]!r}"
+            for n in sorted(set(want.nodes) & set(after.nodes)) for f in FIELDS if after.nodes[n][f] != want.nodes[n][f]
+        ][:3]
+        problems += [f"arrow {e} should have left" for e in sorted(after.edges - want.edges)][:3]
+        problems += [f"arrow {e} should have stayed" for e in sorted(want.edges - after.edges)][:3]
+        left = len(before.nodes) - len(after.nodes)
+        res.add("R4 result as worked out here", scope, problems, f"{left} nodes out again, {len(before.edges) - len(after.edges)} arrows")
+
+
 # ---- the main scenario ----------------------------------------------------------------------------------
 
 
@@ -371,6 +555,104 @@ async def check_main(res: Results, fixture: Path, before_path: Path, after_path:
     if run is not None:
         await check_runs(res, run, before_text, after_text, report_text)
     check_planted(res, planted, replay, after, report)
+    if run is not None:
+        await check_main_redo(res, run, replay, delete_op, before_text, after_text, report_text)
+
+
+async def crash_problems(crash: Path, total: int, want_dump: str, want_report: str) -> tuple[list[str], list[str]]:
+    """Crashed runs of one command: each must finish to the same dump and report, with whole dumps between."""
+    problems: list[str] = []
+    plans: list[str] = []
+    for d in sorted(p for p in crash.iterdir() if p.is_dir()):
+        cmeta = await read_json(d / "meta.json")
+        plans.append("+".join(str(n) for n in cmeta["crash_after"]))
+        final, final_report = await asyncio.gather(read_text(d / "final.jsonl"), read_text(d / "report.json"))
+        for i, (n, code) in enumerate(zip(cmeta["crash_after"], cmeta["exit_codes"])):
+            if i == 0:
+                want_code = CRASH_EXIT_CODE if n <= total else 0
+                if code != want_code:
+                    problems.append(f"{d.name}: CRASH_AFTER={n} exited {code}, expected {want_code}")
+            elif code not in (0, CRASH_EXIT_CODE):
+                problems.append(f"{d.name}: run {i + 1} exited {code}")
+            mid = Graph.parse(await read_text(d / f"mid_{i}.jsonl"))
+            problems += [f"{d.name}: mid dump {i}: arrow {e} to a missing node" for e in mid.dangling()]
+            problems += [f"{d.name}: mid dump {i}: {p}" for p in mid.tag_problems()[:2]]
+            problems += [f"{d.name}: mid dump {i}: {name} used twice" for name in mid.duplicate_names()]
+        if final != want_dump:
+            problems.append(f"{d.name}: final dump differs: " + first_difference(want_dump, final))
+        if final_report != want_report:
+            problems.append(f"{d.name}: final report differs: " + first_difference(want_report, final_report))
+    return problems, plans
+
+
+async def check_main_redo(
+    res: Results, run: Path, replay: Replay, delete_op: str, before_text: str, after_text: str, report_text: str
+) -> None:
+    """Redo on the main scenario: straight after undo, twice, round 2 with changes in between, crashes."""
+    d = run / "redo"
+    names = ("report.json", "after.jsonl", "report2.json", "after2.jsonl", "undo2_report.json", "undo2_after.jsonl",
+             "between_after.jsonl", "partial_report.json", "partial_after.jsonl")
+    files = dict(zip(names, await asyncio.gather(*(read_text(d / name) for name in names))))
+    meta, between, between_summary = await asyncio.gather(
+        read_json(d / "meta.json"), read_jsonl(d / "between.jsonl"), read_json(d / "between.json")
+    )
+    deleted = replay.deletes[delete_op]
+    removed, removed_edges = deleted["nodes"], deleted["edges"]
+    before, after = Graph.parse(before_text), Graph.parse(after_text)
+    redone = Graph.parse(files["after.jsonl"])
+
+    scope = "main redo"
+    check_redo(res, scope, removed, removed_edges, after, redone, json.loads(files["report.json"]), set(), (before, after))
+    res.add(
+        "redo straight after undo = before the undo", scope,
+        [] if files["after.jsonl"] == before_text else [first_difference(before_text, files["after.jsonl"])],
+        "dump equals the dump taken before undo, byte for byte",
+    )
+    problems = idempotency_problems(
+        files["after.jsonl"], files["after2.jsonl"], files["report.json"], files["report2.json"], meta["second_redo_writes"]
+    )
+    res.add("redo idempotent", scope, [p.replace("undo", "redo") for p in problems], "second redo: same dump, same report, no writes")
+
+    scope = "main undo after redo"
+    problems = [] if files["undo2_after.jsonl"] == after_text else ["dump differs: " + first_difference(after_text, files["undo2_after.jsonl"])]
+    problems += [] if files["undo2_report.json"] == report_text else ["report differs: " + first_difference(report_text, files["undo2_report.json"])]
+    res.add("undo after redo = the first undo", scope, problems, "same dump and same report, byte for byte")
+    again = Graph.parse(files["undo2_after.jsonl"])
+    check_undo(res, scope, replay, delete_op, redone, again, json.loads(files["undo2_report.json"]))
+
+    scope = "main redo, changes since undo"
+    problems = [] if between_summary["applied"] == len(between) else [f"only {between_summary['applied']} of {len(between)} applied"]
+    changed = Graph.parse(files["between_after.jsonl"])
+    partial = Graph.parse(files["partial_after.jsonl"])
+    partial_report = json.loads(files["partial_report.json"])
+    kept = [e for e in partial_report["nodes"] if e["outcome"] == "kept"]
+    reasons = Counter(e.get("reason") for e in kept)
+    problems += [] if reasons["written_since_undo"] and reasons["still_in_use"] else [f"expected both reasons to keep a node, got {dict(reasons)}"]
+    res.add("changes between undo and redo applied", scope, problems,
+            f"{len(between)} operations; redo kept {len(kept)} nodes: {dict(reasons)}")
+    check_redo(res, scope, removed, removed_edges, changed, partial, partial_report, human_fields_of(between), (redone, again))
+
+    scope = "main redo"
+    problems, plans = await crash_problems(d / "crash", meta["redo_writes"], files["after.jsonl"], files["report.json"])
+    res.add("redo resumable", scope, problems,
+            f"{len(plans)} runs of a {meta['redo_writes']}-write redo, CRASH_AFTER = {', '.join(plans)}")
+
+    problems = []
+    for name, want_final in (("redo_after_crashed_undo", before_text), ("undo_after_crashed_redo", after_text)):
+        r = d / "refused" / name
+        rmeta, mid, after_refused, final = await asyncio.gather(
+            read_json(r / "meta.json"), read_text(r / "mid.jsonl"), read_text(r / "after_refused.jsonl"), read_text(r / "final.jsonl")
+        )
+        if rmeta["crash_exit"] != CRASH_EXIT_CODE:
+            problems.append(f"{name}: the first command did not crash (exit {rmeta['crash_exit']})")
+        if rmeta["exit"] != 1 or "not finished" not in rmeta["stderr"]:
+            problems.append(f"{name}: not refused: exit {rmeta['exit']}, {rmeta['stderr']!r}")
+        if after_refused != mid:
+            problems.append(f"{name}: the refused command changed the graph")
+        if final != want_final:
+            problems.append(f"{name}: after finishing both commands: " + first_difference(want_final, final))
+    res.add("unfinished command blocks the other", scope, problems,
+            "redo after a crashed undo, undo after a crashed redo: refused, nothing changes")
 
 
 async def check_runs(res: Results, run: Path, before_text: str, after_text: str, report_text: str) -> None:
@@ -408,32 +690,9 @@ async def check_runs(res: Results, run: Path, before_text: str, after_text: str,
     )
 
     # 7. Resumable.
-    problems = []
-    crash_dirs = sorted(p for p in (run / "crash").iterdir() if p.is_dir())
     total = meta["undo_writes"]
-    plans: list[str] = []
-    for d in crash_dirs:
-        cmeta = await read_json(d / "meta.json")
-        plans.append("+".join(str(n) for n in cmeta["crash_after"]))
-        final, final_report = await asyncio.gather(read_text(d / "final.jsonl"), read_text(d / "report.json"))
-        for i, (n, code) in enumerate(zip(cmeta["crash_after"], cmeta["exit_codes"])):
-            if i == 0:
-                want_code = CRASH_EXIT_CODE if n <= total else 0
-                if code != want_code:
-                    problems.append(f"{d.name}: CRASH_AFTER={n} exited {code}, expected {want_code}")
-            elif code not in (0, CRASH_EXIT_CODE):
-                problems.append(f"{d.name}: run {i + 1} exited {code}")
-            mid = Graph.parse(await read_text(d / f"mid_{i}.jsonl"))
-            problems += [f"{d.name}: mid dump {i}: arrow {e} to a missing node" for e in mid.dangling()]
-            problems += [f"{d.name}: mid dump {i}: {p}" for p in mid.tag_problems()[:2]]
-            problems += [f"{d.name}: mid dump {i}: {name} used twice" for name in mid.duplicate_names()]
-        if final != after_text:
-            problems.append(f"{d.name}: final dump differs: " + first_difference(after_text, final))
-        if final_report != report_text:
-            problems.append(f"{d.name}: final report differs: " + first_difference(report_text, final_report))
-    res.add(
-        "7 resumable", scope, problems, f"{len(crash_dirs)} runs of a {total}-write undo, CRASH_AFTER = {', '.join(plans)}"
-    )
+    problems, plans = await crash_problems(run / "crash", total, after_text, report_text)
+    res.add("7 resumable", scope, problems, f"{len(plans)} runs of a {total}-write undo, CRASH_AFTER = {', '.join(plans)}")
 
     # 8. Under 60 seconds: the scenario itself, and the whole run with every extra undo.
     seconds, whole = timing["scenario_seconds"], timing["harness_seconds"]
@@ -755,6 +1014,214 @@ async def check_small(res: Results, small: Path, run: Path) -> None:
         )
 
 
+# ---- the redo stories ---------------------------------------------------------------------------------------
+
+# The design's example redo report, word for word (its first redo story).
+REDO_REPORT = {"op_id": "d1", "redo_of": "undo:d1", "nodes": [
+    {"id": "n2", "qualified_name": "sales.orders", "outcome": "reverted", "target": "n7",
+     "put_back": ["description", "tags"], "kept": {}},
+    {"id": "n3", "qualified_name": "sales.orders.email", "outcome": "unchanged", "reason": "nothing_filled"},
+    {"id": "n4", "qualified_name": "sales.orders.total", "outcome": "removed"},
+], "edges": [
+    {"from": "n1", "to": "n2", "type": "contains", "outcome": "unchanged", "reason": "not_added_by_undo"},
+    {"from": "n2", "to": "n3", "type": "contains", "outcome": "unchanged", "reason": "not_added_by_undo"},
+    {"from": "n2", "to": "n4", "type": "contains", "outcome": "removed", "was": ["n7", "n4"]},
+    {"from": "n6", "to": "n2", "type": "references", "outcome": "removed", "was": ["n6", "n7"]},
+    {"from": "n6", "to": "n4", "type": "references", "outcome": "removed"},
+]}
+
+KEPT_END = ("kept", "end_kept")
+WAITS = {"waiting_on": "d2"}
+
+# What each story must show. Steps are numbered from 1; dump 0 is the one right after apply.
+#   same      (k, j): the dump after step k equals the dump after step j ("load": the dump right after load)
+#   same_out  (k, j): step k printed the same report as step j
+#   zero      steps that must write nothing
+#   exits     the exit status of every step
+#   refused   steps that must be refused because the other command is unfinished
+#   report    the whole report of a step, with the design's short ids
+#   rows      rows of a step's report: "n2" a node, "n1>n2" an arrow, "d1:n2" a row of another delete;
+#             each (outcome, reason) or (outcome, reason, fields the entry must have)
+#   all       every row of the delete has this outcome, and no row of another delete is listed
+#   only      the graph after a step is the seed with only these deletes applied
+#   fields    values a live node must have after a step
+#   single    one delete is undone in this story, so the result of each redo is also worked out here (R4)
+REDO_EXPECT: dict[str, dict[str, Any]] = {
+    "straight": {
+        "single": True, "same": [(2, 0), (3, 0), (4, 1), (5, 0)], "zero": [3], "same_out": [(3, 2), (4, 1)],
+        "report": {2: REDO_REPORT},
+    },
+    "edited_restored_node": {
+        "single": True,
+        "rows": {3: {"n3": ("removed", None), "n4": ("kept", "written_since_undo"), "n2": ("kept", "still_in_use"),
+                     "n2>n3": ("removed", None), "n1>n2": KEPT_END, "n2>n4": KEPT_END, "n6>n2": KEPT_END, "n6>n4": KEPT_END}},
+        "fields": {3: {"n4": {"description": "Order total with tax"}}},
+    },
+    "rewrote_filled_field": {
+        "single": True,
+        "rows": {3: {"n2": ("reverted", None, {"put_back": ["tags"], "kept": {"description": "written_since_undo"}}),
+                     "n3": ("unchanged", "nothing_filled"), "n4": ("removed", None)}},
+        "fields": {3: {"n7": {"description": "Orders, one row each", "tags": [], "owner": "ben",
+                              "effective_tags": ["finance", "gdpr"]}}},
+    },
+    "two_undos_redo_d2": {
+        "same": [(3, 1), (4, 3)], "zero": [4],
+        "rows": {3: {"n6": ("removed", None), "d1:n6>n2": ("removed", None, WAITS), "d1:n6>n4": ("removed", None, WAITS)},
+                 4: {"n6>n2": ("skipped", "endpoint_not_live", WAITS), "n6>n4": ("skipped", "endpoint_not_live", WAITS),
+                     "n2": ("restored", None)}},
+    },
+    "two_undos_redo_d1": {"all": {3: "removed"}, "only": {3: ["d1"]}},
+    "parent_redo_d1": {"all": {3: "removed"}, "only": {3: ["d1"]}},
+    "parent_redo_d2": {
+        "same": [(3, 0), (4, 3)], "zero": [4],
+        "rows": {3: {"n1": ("removed", None), "n5": ("removed", None), "n1>n5": ("removed", None),
+                     "d1:n2": ("removed", None, WAITS), "d1:n3": ("removed", None, WAITS), "d1:n4": ("removed", None, WAITS),
+                     "d1:n1>n2": ("removed", None, WAITS), "d1:n6>n4": ("removed", None, WAITS)},
+                 4: {"n2": ("skipped", "parent_not_live", WAITS), "n4": ("skipped", "parent_not_live", WAITS),
+                     "n6>n2": ("skipped", "endpoint_not_live", WAITS)}},
+    },
+    "rows_were_waiting": {"same": [(2, 1)], "all": {2: "unchanged"}, "only": {3: ["d1"]}},
+    "deleted_again": {
+        "single": True, "same": [(4, "load"), (5, "load")],
+        "rows": {3: {"n4": ("unchanged", "deleted_since", {"deleted_by": "d3"}), "n2": ("removed", None), "n3": ("removed", None),
+                     "n6>n4": ("unchanged", "deleted_since", {"deleted_by": "d3"})},
+                 5: {"n4": ("restored", "already_live")}},
+    },
+    "merge_target_deleted": {
+        "single": True, "same": [(3, 2), (4, 1)],
+        "rows": {3: {"n2": ("unchanged", "target_not_live", {"target": "n7", "deleted_by": "d3"}),
+                     "n3": ("unchanged", "deleted_since"), "n4": ("unchanged", "deleted_since"),
+                     "n1>n2": ("unchanged", "not_added_by_undo")}},
+    },
+    "two_undos_one_node_blocked": {"same": [(3, 2)], "rows": {3: {"n8": ("kept", "still_in_use"), "n2>n8": KEPT_END}}},
+    "two_undos_one_node_clean": {
+        "same": [(4, 0)],
+        "rows": {3: {"n3": ("reverted", None, {"target": "n8", "put_back": ["description", "owner", "tags"]})},
+                 4: {"n8": ("removed", None), "n2>n8": ("removed", None)}},
+    },
+    "refused_while_unfinished": {
+        "single": True, "exits": [CRASH_EXIT_CODE, 1, 0, CRASH_EXIT_CODE, 1, 0], "refused": [2, 5],
+        "same": [(2, 1), (5, 4), (6, 0)],
+    },
+}
+
+
+async def check_redo_stories(res: Results, small: Path, run: Path) -> None:
+    seed = await read_jsonl(small / "seed.jsonl")
+    names = {rec["qualified_name"]: rec["id"] for rec in seed if rec["kind"] == "node"}
+    ids = {short: names[name] for short, name in STORY_SEED.items()}
+    ids.update({short: ingest_node_id(op_id, name) for short, (op_id, name) in STORY_INGESTED.items()})
+    short = {full: s for s, full in ids.items()}
+
+    def shorten(text: str) -> str:
+        for full, s in short.items():
+            text = text.replace(f'"{full}"', f'"{s}"')
+        return text
+
+    seen = sorted(p.name for p in run.iterdir() if p.is_dir())
+    res.add("every redo story was run", "redo stories", [] if seen == sorted(REDO_EXPECT) else [f"ran {seen}"], f"{len(seen)} stories")
+    for d in sorted(p for p in run.iterdir() if p.is_dir() and p.name in REDO_EXPECT):
+        label, want = f"redo: {d.name}", REDO_EXPECT[d.name]
+        manifest = await read_json(d / "manifest.json")
+        steps: list[dict[str, Any]] = manifest["steps"]
+        ops = await read_jsonl(small / manifest["ops"])
+        replay = Replay(seed)
+        replay.apply_all(ops)
+        paths = sorted(p for p in d.iterdir() if p.suffix in (".jsonl", ".json") and p.name != "manifest.json")
+        files = dict(zip((p.name for p in paths), await asyncio.gather(*(read_text(p) for p in paths))))
+        dumps: dict[Any, str] = {k: files[f"{k}_dump.jsonl"] for k in range(len(steps) + 1)}
+        dumps["load"] = files["load.jsonl"]
+        later = {s["arg"]: await read_jsonl(small / s["arg"]) for s in steps if s["command"] == "apply"}
+
+        # The checks every redo gets, from the dump before it, the dump after it and its report.
+        human: set[tuple[str, str]] = set()  # written by a person since the last undo
+        around: dict[str, tuple[int, int]] = {}  # delete -> the dumps around its last undo
+        started: dict[str, int] = {}
+        redone: set[str] = set()
+        for k, step in enumerate(steps, start=1):
+            command, arg, ok = step["command"], step["arg"], step["exit"] == 0
+            if command == "apply":
+                human |= human_fields_of(later[arg])
+            elif command == "undo":
+                started.setdefault(arg, k - 1)
+                if ok:
+                    around[arg] = (started.pop(arg), k)
+                    human = set()
+                    if arg in redone and arg in replay.deletes:
+                        # An undo after a redo passes the checks of a first undo.
+                        check_undo(res, f"{label}, undo {arg} again", replay, arg, Graph.parse(dumps[k - 1]),
+                                   Graph.parse(dumps[k]), json.loads(files[f"{k}_out.json"]))
+            elif command == "redo" and ok and step["writes"]:
+                deleted = replay.deletes[arg]
+                span = around.get(arg)
+                check_redo(
+                    res, f"{label}, step {k}", deleted["nodes"], deleted["edges"], Graph.parse(dumps[k - 1]),
+                    Graph.parse(dumps[k]), json.loads(files[f"{k}_out.json"]), human,
+                    (Graph.parse(dumps[span[0]]), Graph.parse(dumps[span[1]])) if want.get("single") and span else None,
+                )
+                redone.add(arg)
+
+        # What this story shows.
+        problems: list[str] = []
+        exits = want.get("exits", [0] * len(steps))
+        problems += [
+            f"step {k} ({s['command']} {s['arg']}): exit {s['exit']}, expected {e}: {s['stderr'].splitlines()[-1] if s['stderr'] else ''}"
+            for k, (s, e) in enumerate(zip(steps, exits), start=1) if s["exit"] != e
+        ]
+        if problems:  # a step failed, so there is no report to hold against the story
+            res.add("story", label, problems)
+            continue
+        for k in want.get("refused", []):
+            if "not finished" not in steps[k - 1]["stderr"]:
+                problems.append(f"step {k} was not refused as unfinished: {steps[k - 1]['stderr']!r}")
+        for k, j in want.get("same", []):
+            if dumps[k] != dumps[j]:
+                problems.append(f"dump after step {k} differs from dump {j}: " + first_difference(dumps[j], dumps[k]))
+        for k, j in want.get("same_out", []):
+            if files[f"{k}_out.json"] != files[f"{j}_out.json"]:
+                problems.append(f"step {k} printed a different report than step {j}")
+        problems += [f"step {k} made {steps[k - 1]['writes']} writes" for k in want.get("zero", []) if steps[k - 1]["writes"] != 0]
+        for k, expected in want.get("report", {}).items():
+            got = json.loads(shorten(files[f"{k}_out.json"]))
+            got.pop("summary", None)
+            if got != expected:
+                problems.append(f"step {k}: report differs from the design: " + first_difference(
+                    json.dumps(expected, indent=1, sort_keys=True), json.dumps(got, indent=1, sort_keys=True)))
+        for k, rows in want.get("rows", {}).items():
+            report = json.loads(shorten(files[f"{k}_out.json"]))
+            got_rows: dict[str, dict[str, Any]] = {}
+            for key in ("nodes", "edges", "other_nodes", "other_edges"):
+                for e in report.get(key, []):
+                    name = e["id"] if "id" in e else f"{e['from']}>{e['to']}"
+                    got_rows[f"{e['delete']}:{name}" if "delete" in e else name] = e
+            for name, (outcome, reason, *more) in rows.items():
+                e = got_rows.get(name)
+                if e is None:
+                    problems.append(f"step {k}: no row {name}")
+                elif e["outcome"] != outcome or e.get("reason") != reason:
+                    problems.append(f"step {k}: {name} is {e['outcome']} ({e.get('reason')}), the story says {outcome} ({reason})")
+                else:
+                    problems += [f"step {k}: {name}.{f} is {e.get(f)!r}, the story says {v!r}" for f, v in (more[0] if more else {}).items() if e.get(f) != v]
+        for k, outcome in want.get("all", {}).items():
+            report = json.loads(files[f"{k}_out.json"])
+            problems += [f"step {k}: {e} is not {outcome}" for e in report["nodes"] + report["edges"] if e["outcome"] != outcome]
+            if report.get("other_nodes") or report.get("other_edges"):
+                problems.append(f"step {k}: rows of another delete are listed")
+        for k, applied in want.get("only", {}).items():
+            partial = Replay(seed)
+            partial.apply_all([op for op in ops if op["op_id"] in applied])
+            if Graph.parse(dumps[k]).comparable() != Graph.of(partial).comparable():
+                problems.append(f"after step {k} the graph is not the seed with only {applied} applied")
+        for k, nodes in want.get("fields", {}).items():
+            graph = Graph.parse(dumps[k])
+            for s, fields in nodes.items():
+                node = graph.nodes.get(ids[s])
+                problems += [f"after step {k}: {s} is not live"] if node is None else [
+                    f"after step {k}: {s}.{f} is {node[f]!r}, the story says {v!r}" for f, v in fields.items() if node[f] != v
+                ]
+        res.add("story", label, problems, f"{len(steps)} steps as the design's story shows")
+
+
 async def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check a scenario run against the eight invariants.")
     parser.add_argument("fixture", type=Path, help="directory with seed.jsonl, ops.jsonl, planted.json")
@@ -776,6 +1243,7 @@ async def main(argv: list[str] | None = None) -> int:
         )
         if args.small is not None:
             await check_small(res, args.small, args.run / "small")
+            await check_redo_stories(res, args.small, args.run / "redo")
     ok = res.print()
     if args.run is None:
         print("checks 6, 7 and 8 need the runs run_scenario.py makes: python3 checker.py FIXTURE --run RUN")

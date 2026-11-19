@@ -48,6 +48,19 @@ Undoing a later delete retries the rows that were waiting on it: newest journal 
 first. In this order nothing has to wait. A row that already has an outcome is never decided again.
 That makes a second run write nothing, and a crashed run resume from its last committed step.
 
+## Redo (the extension)
+
+`redo <op_id>` takes back what the undo put back, on the graph as it is now. It does not replay the
+delete, and it never removes or changes anything a person did after the undo.
+- **Independent** edits touched nothing undo put back. They are left as they are.
+- **Conflicting**: a person wrote on, or attached something to, a thing undo put back. That thing stays
+  (`written_since_undo`, `still_in_use`), with its parents and arrows. A filled field a person rewrote stays.
+- **Caused**: an ingest update that only happened because the node was back does not hold redo back.
+- After redo every row is either kept or open again, so a row that waited on another delete stops waiting.
+- Redo of d1 takes out what d1 removed, whichever undo command put it back.
+- Undo and redo can be repeated and go back and forth in rounds. Each is refused while the other is unfinished.
+- If a later delete removed something first, redo leaves it alone and the report says so.
+
 ## What the model proposed that I rejected, and why
 
 Design:

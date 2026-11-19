@@ -8,9 +8,10 @@ Order of work:
 3. Rows of earlier undos that are waiting on this delete, newest journal first, parents first.
 4. The report, printed from the journal rows.
 
-The undo is logged as an operation of its own the first time it runs ('undo:<op_id>', by a person), and
-every journal row records which undo decided it. A merge also records what the live node held before (the
-row's `prior`), and the report lists any written value it replaced. That is what a redo will need.
+The undo is logged as an operation of its own the first time it runs (by a person), and every journal row
+records which undo decided it. A merge also records what the live node held before (the row's `prior`), and
+the report lists any written value it replaced. That is what redo needs. An undo after a redo is a new
+round with a new entry (rounds.py): it decides the rows redo opened again, against the graph as it is then.
 
 Each row is one step and one transaction: its graph change, its tag refresh and its outcome in the journal
 are saved together or not at all. A row that already has an outcome is never decided again, so a second run
@@ -23,6 +24,8 @@ Node decision
     else parent live (or merged)  -> restored with its old id and all its fields
     else                          -> skipped, reason parent_not_live, waiting_on the delete holding the parent
     no parent at delete time      -> restored at the top level (when the name is free)
+    its own id holds the name     -> restored, reason already_live: the undo of another delete that covers
+                                     this node brought it back first, and there is nothing to add
 
 Merge, field by field (description, owner, tags, and type): the most recent write wins. The seed counts as
 written at seq 0; a value put back by an undo keeps the seq of its original write. Everything in a journal
@@ -45,8 +48,9 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from .common import CONTAINS, HUMAN, WRITTEN_FIELDS, tags_json
-from .graph import ancestor_or_self, edge_live, has_parent, insert_edge, log_op, node_live, record_write
+from .common import CONTAINS, WRITTEN_FIELDS, tags_json
+from .graph import ancestor_or_self, edge_live, has_parent, insert_edge, node_live, record_write
+from .rounds import UNDO, CommandError, check_delete, entry_for, finish
 from .store import Store
 from .tags import refresh_subtree
 
@@ -59,8 +63,7 @@ FROM removed_nodes WHERE delete_op = ? AND id = ?
 """
 
 
-class UndoError(Exception):
-    """undo was asked for something it cannot do. Nothing has been written."""
+UndoError = CommandError  # undo was asked for something it cannot do; nothing has been written
 
 
 @dataclass(frozen=True)
@@ -95,27 +98,19 @@ def _pending(outcome: str | None, row_waiting_on: str | None, retrying_for: str 
 
 async def undo(store: Store, op_id: str) -> dict[str, Any]:
     """Undo one subtree delete and return its report."""
-    op = await store.fetchone("SELECT kind, status FROM ops WHERE op_id = ?", (op_id,))
-    if op is None:
-        raise UndoError(f"no operation with op_id {op_id!r}")
-    kind, status = op
-    if kind != "delete_subtree":
-        raise UndoError(f"{op_id} is {kind!r}, not a delete_subtree; undo takes the op_id of a subtree delete")
-    if status != "applied":
-        raise UndoError(f"{op_id} was rejected when it was applied, so it removed nothing")
-    run = UndoRun(store, op_id)
-    async with store.transaction():  # logged once; a resumed or repeated run finds it and writes nothing
-        if not await store.fetchval("SELECT 1 FROM ops WHERE op_id = ?", (run.undo_id,)):
-            await log_op(store, run.undo_id, "undo", HUMAN, {"undo_of": op_id})
-    await run.run()
+    await check_delete(store, op_id, UNDO)
+    entry = await entry_for(store, op_id, UNDO)  # logged once; a repeated run finds it and writes nothing
+    if not entry.finished:
+        await UndoRun(store, op_id, entry.seq).run()
+        await finish(store, entry)
     return await build_report(store, op_id)
 
 
 class UndoRun:
-    def __init__(self, store: Store, op_id: str) -> None:
+    def __init__(self, store: Store, op_id: str, undo_seq: int) -> None:
         self.store = store
         self.op_id = op_id
-        self.undo_id = f"undo:{op_id}"  # written next to every outcome this run decides
+        self.undo_seq = undo_seq  # the running number of this undo, written next to every outcome it decides
 
     async def run(self) -> None:
         await self._decide_rows(self.op_id, retrying_for=None)
@@ -169,7 +164,11 @@ class UndoRun:
                 return
             parent_arrow = (row.parent_id, row.id, CONTAINS) if row.parent_id is not None else None
             holder = await store.fetchval("SELECT id FROM nodes WHERE qualified_name = ?", (row.qualified_name,))
-            if holder is not None:
+            if holder == row.id:
+                # Another delete covers this node too, and its undo has already brought it back.
+                await self._mark_node(row, RESTORED, "already_live")
+                target = holder
+            elif holder is not None:
                 detail, prior = await self._merge_into(row, holder)
                 await self._mark_node(row, MERGED, "name_in_use", merged_into=holder, detail=detail, prior=prior)
                 target = holder
@@ -371,7 +370,7 @@ class UndoRun:
                 merged_into,
                 waiting_on,
                 None if detail is None else json.dumps(detail, ensure_ascii=False),
-                self.undo_id,
+                self.undo_seq,
                 None if prior is None else json.dumps(prior, ensure_ascii=False),
                 row.delete_op,
                 row.id,
@@ -391,7 +390,7 @@ class UndoRun:
         await self.store.write(
             "UPDATE removed_edges SET outcome = ?, reason = ?, waiting_on = ?, now_from = ?, now_to = ?, decided_by = ? "
             "WHERE delete_op = ? AND from_id = ? AND to_id = ? AND type = ?",
-            (outcome, reason, waiting_on, *(now or (None, None)), self.undo_id, delete_op, *edge),
+            (outcome, reason, waiting_on, *(now or (None, None)), self.undo_seq, delete_op, *edge),
         )
 
 
@@ -444,17 +443,17 @@ def _count(entries: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def format_report(report: dict[str, Any]) -> str:
-    """JSON with one node or arrow per line, so the report reads like a table and diffs cleanly."""
+    """JSON with one node or arrow per line, so the report reads like a table and diffs cleanly.
 
-    def block(key: str) -> str:
-        items = report[key]
-        if not items:
+    Used for the report of undo and of redo: a list becomes a block of lines, anything else one line.
+    """
+
+    def part(key: str, value: Any) -> str:
+        if not isinstance(value, list):
+            return f'  "{key}": {json.dumps(value, ensure_ascii=False)}'
+        if not value:
             return f'  "{key}": []'
-        body = ",\n".join("    " + json.dumps(item, ensure_ascii=False) for item in items)
+        body = ",\n".join("    " + json.dumps(item, ensure_ascii=False) for item in value)
         return f'  "{key}": [\n{body}\n  ]'
 
-    head = [
-        f'  "op_id": {json.dumps(report["op_id"])}',
-        f'  "summary": {json.dumps(report["summary"])}',
-    ]
-    return "{\n" + ",\n".join(head + [block("nodes"), block("edges")]) + "\n}\n"
+    return "{\n" + ",\n".join(part(key, value) for key, value in report.items()) + "\n}\n"

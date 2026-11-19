@@ -4,8 +4,8 @@ sqlite3 is a blocking library. Every call to it runs on one worker thread that o
 callers await the result, so the event loop never waits on the disk. One thread also gives one connection
 and a strict order of statements, which the per-step transactions rely on.
 
-The store counts every INSERT, UPDATE and DELETE it runs. When CRASH_AFTER=<n> is set (only undo passes it
-in), the process stops at once right after the n-th write, before the step it belongs to is committed.
+The store counts every INSERT, UPDATE and DELETE it runs. When CRASH_AFTER=<n> is set (only undo and redo
+pass it in), the process stops at once right after the n-th write, before the step it belongs to is committed.
 SQLite discards that half-done step the next time the file is opened.
 """
 

@@ -2,7 +2,7 @@
 """Write the test data, deterministic from a seed number.
 
     python3 gen_fixture.py --seed 7 --out fixture          seed.jsonl, ops.jsonl, planted.json
-    python3 gen_fixture.py --small --out fixture_small     the six-node graph and one ops file per story
+    python3 gen_fixture.py --small --out fixture_small     the six-node graph and the ops files of the stories
 
 Every id and every choice comes from one random generator started with the seed, so the same seed always
 gives the same files. Before writing, the generator counts what the task asks for, prints the counts, and
@@ -522,7 +522,7 @@ def build_small() -> dict[str, Any]:
     orders = ingest_node_id("i1", "sales.orders")
     email = ingest_node_id("i2", "sales.orders.email")
     archive = ingest_node_id("i0", "archive")
-    n1, n2, n5, n6 = (small_id(s) for s in ("n1", "n2", "n5", "n6"))
+    n1, n2, n3, n4, n5, n6 = (small_id(s) for s in ("n1", "n2", "n3", "n4", "n5", "n6"))
     return {
         "seed.jsonl": seed,
         # A neighbour is deleted later: d2 removes the dashboard that two arrows of d1 need.
@@ -563,6 +563,18 @@ def build_small() -> dict[str, Any]:
             ingest("i1", "sales.orders", "table", "sales"),
             op("m1", "human", "repoint_edge", from_id=n1, to_id=orders, type="contains", new_from_id=archive),
         ],
+        # ---- for the redo stories -----------------------------------------------------------------
+        # The delete alone: undo restores everything, then a person edits or deletes something.
+        "ops_g.jsonl": [delete("d1", n2)],
+        # The delete and one recreated node: undo merges into it and restores the two columns under it.
+        "ops_h.jsonl": [delete("d1", n2), ingest("i1", "sales.orders", "table", "sales")],
+        # Two undos on one node: a column is deleted, recreated, and the recreated one is deleted again.
+        "ops_i.jsonl": [delete("d1", n3), ingest("i2", "sales.orders.email", "column", "sales.orders"), delete("d2", email)],
+        # Applied between an undo and a redo.
+        "later_edit_total.jsonl": [op("x1", "human", "edit_node", id=n4, set={"description": "Order total with tax"})],
+        "later_edit_orders.jsonl": [op("x1", "human", "edit_node", id=orders, set={"description": "Orders, one row each"})],
+        "later_delete_total.jsonl": [delete("d3", n4)],
+        "later_delete_orders.jsonl": [delete("d3", orders)],
     }
 
 

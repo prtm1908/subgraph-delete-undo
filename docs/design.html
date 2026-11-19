@@ -157,7 +157,7 @@ b.f{color:var(--accent)}
 
   <figure>
     <div class="scroll">
-      <svg viewBox="0 0 946 470" role="img" aria-label="The command-line tool is one Python process. Its four commands call a loader, an operation applier, an undo engine and a dumper. All writes go through one store layer into one SQLite file that holds the live graph and the journal. A fixture generator makes the input files and a separate checker reads the outputs.">
+      <svg viewBox="0 0 946 470" role="img" aria-label="The command-line tool is one Python process. Its four commands call a loader, an operation applier, an undo engine and a dumper; a fifth command, redo, is the extension. All writes go through one store layer into one SQLite file that holds the live graph and the journal. A fixture generator makes the input files and a separate checker reads the outputs.">
         <!-- left: fixture -->
         <rect class="bx" x="16" y="40" width="150" height="40" rx="6"/>
         <text class="tm" x="91" y="64" text-anchor="middle">gen_fixture.py</text>
@@ -236,7 +236,7 @@ b.f{color:var(--accent)}
         <text class="tm" x="868" y="254" text-anchor="middle">checker.py</text>
         <text class="ts" x="868" y="290" text-anchor="middle">separate program,</text>
         <text class="ts" x="868" y="304" text-anchor="middle">shares no code</text>
-        <text class="t" x="868" y="330" text-anchor="middle">8 checks: pass / fail</text>
+        <text class="t" x="868" y="330" text-anchor="middle">checks: pass / fail</text>
       </svg>
     </div>
     <figcaption>Everything inside the grey box is one process. The operation applier and the undo engine both call the tag propagator. The checker also reads <code>seed.jsonl</code> and <code>ops.jsonl</code> so it can work out the expected result on its own.</figcaption>
@@ -253,7 +253,7 @@ b.f{color:var(--accent)}
     <dt>Tag propagator</dt><dd>One function: recompute inherited tags for a node and everything below it. Called by apply and by undo.</dd>
     <dt>Store</dt><dd>A thin layer over <code>sqlite3</code>. Opens the file, turns foreign keys on, wraps each step in a transaction, and counts write statements so <code>CRASH_AFTER=&lt;n&gt;</code> can stop the process on the n-th one.</dd>
     <dt>gen_fixture.py</dt><dd>Makes <code>seed.jsonl</code> and <code>ops.jsonl</code> from a seed number, and <code>planted.json</code>, which lists the nodes each planted case uses. Same seed, same files: every id and every choice comes from one random generator started with the seed. It checks its own output against the minimums the task sets and stops with an error if one is missed.</dd>
-    <dt>checker.py</dt><dd>A separate program that imports nothing from the tool. It replays the seed and the operations in plain Python dictionaries, then compares that with the dumps and the report for the eight checks.</dd>
+    <dt>checker.py</dt><dd>A separate program that imports nothing from the tool. It replays the seed and the operations in plain Python dictionaries, then compares that with the dumps and the report for the eight checks, and for the redo checks in section 4.</dd>
   </dl>
 
   <h3>What can change the graph</h3>
@@ -264,9 +264,10 @@ b.f{color:var(--accent)}
     <dt>Re-point an arrow</dt><dd>By a person or by ingest. Moves one end of an existing arrow to another node. It counts as two changes: the old arrow is taken away and the new one is added. Re-pointing a <code>contains</code> arrow moves a node under another parent.</dd>
     <dt>Ingest a node by name</dt><dd>By ingest. If a live node already has the name, ingest updates its type. If none has it, ingest creates a node with a new id and puts it under its parent, if that parent is live. Ingest never sets description, owner or tags. An ingest from a person is refused: people do not create nodes in this tool, and only ingest sets the type.</dd>
     <dt>Delete a subtree</dt><dd>By a person or by ingest. Removes a node, everything it contains, and every arrow that touches any of them. The inherited tags of the nodes that remain are then recomputed.</dd>
-    <dt>Undo a delete</dt><dd>By a person, with the <code>undo</code> command. It takes the <code>op_id</code> of one subtree delete. The undo is recorded as an operation of its own, so a redo can be added later.</dd>
+    <dt>Undo a delete</dt><dd>By a person, with the <code>undo</code> command. It takes the <code>op_id</code> of one subtree delete. The undo is recorded as an operation of its own, so a redo can tell what came after it.</dd>
+    <dt>Redo a delete</dt><dd>By a person, with the <code>redo</code> command, the one extension to the task's four commands. It takes the <code>op_id</code> of a subtree delete that has been undone, and takes back what the undo put back. Section 4 describes it.</dd>
   </dl>
-  <p>Not part of the tool: a person creating a node, renaming a node, removing a single arrow without re-pointing it, undoing anything other than a subtree delete, redo, the 24-hour limit, and checking who is allowed to do what.</p>
+  <p>Not part of the tool: a person creating a node, renaming a node, removing a single arrow without re-pointing it, undoing anything other than a subtree delete, the 24-hour limit, and checking who is allowed to do what.</p>
 </section>
 
 <section>
@@ -355,9 +356,9 @@ CREATE UNIQUE INDEX one_parent ON edges(to_id) WHERE type = 'contains';</code></
   <h3>The journal</h3>
   <p>A deleted row is not thrown away. The delete moves it from the live tables into the journal tables, labelled with the delete's <code>op_id</code>. Undo later moves rows back one at a time and writes what it did next to each row.</p>
   <dl>
-    <dt>ops</dt><dd>Every operation, with a running number, its <code>op_id</code>, its kind, the time it ran, whether a human or the ingest did it, and whether it was applied or rejected (with the reason). The running number is what "after the delete" means. Each undo is recorded here too, the first time it runs, as an operation of its own by a person (<code>undo:&lt;op_id&gt;</code>), so a later operation, or a redo, can tell what came after it.</dd>
-    <dt>removed_nodes</dt><dd>A copy of each node a delete removed: id, name, type, description, owner, tags, the id of its parent, and its place in parents-first order. For each of the three fields, and for the type, it also keeps who wrote it last and in which operation. Plus the columns undo fills in: <code>outcome</code>, <code>reason</code>, <code>merged_into</code>, <code>waiting_on</code>, the details the report prints for a merge, the undo that decided the row (<code>decided_by</code>), and for a merge what the live node held before undo changed it (<code>prior</code>), so a redo can put it back.</dd>
-    <dt>removed_edges</dt><dd>A copy of each arrow a delete removed, with its place in the order undo takes them. Plus <code>outcome</code>, <code>reason</code>, <code>waiting_on</code>, where the arrow points now if it was moved, and the undo that decided it.</dd>
+    <dt>ops</dt><dd>Every operation, with a running number, its <code>op_id</code>, its kind, the time it ran, whether a human or the ingest did it, and whether it was applied or rejected (with the reason). The running number is what "after the delete" means. Each undo is recorded here too, the first time it runs, as an operation of its own by a person (<code>undo:&lt;op_id&gt;</code>), so a later operation, or a redo, can tell what came after it. An undo or redo entry also stores the delete it is for, its round number and a finished mark (section 4, "Going back and forth").</dd>
+    <dt>removed_nodes</dt><dd>A copy of each node a delete removed: id, name, type, description, owner, tags, the id of its parent, and its place in parents-first order. For each of the three fields, and for the type, it also keeps who wrote it last and in which operation. Plus the columns undo fills in: <code>outcome</code>, <code>reason</code>, <code>merged_into</code>, <code>waiting_on</code>, the details the report prints for a merge, the undo that decided the row (<code>decided_by</code>), and for a merge what the live node held before undo changed it (<code>prior</code>), so a redo can put it back. Redo adds columns of its own: its outcome, its reason, and the redo that wrote them.</dd>
+    <dt>removed_edges</dt><dd>A copy of each arrow a delete removed, with its place in the order undo takes them. Plus <code>outcome</code>, <code>reason</code>, <code>waiting_on</code>, where the arrow points now if it was moved, and the undo that decided it. Redo adds the same columns of its own here.</dd>
     <dt>field_writes</dt><dd>For each node and each of description, owner, tags and type: who wrote it last, and in which operation. This lets undo tell "empty because nobody wrote it" from "a person cleared it on purpose", and lets the type follow the same "most recent wins" rule.</dd>
     <dt>edge_removals</dt><dd>Every arrow a person re-pointed away from its old target, with the number of the operation. Undo uses it so that it never puts back an arrow a person took away after the delete.</dd>
   </dl>
@@ -498,7 +499,7 @@ CREATE UNIQUE INDEX one_parent ON edges(to_id) WHERE type = 'contains';</code></
   <h3>Crashes, resuming, and running it twice</h3>
   <ul>
     <li><b>One step, one transaction.</b> A step is one removed node or one removed arrow. Its graph change, its tag refresh and its outcome in the journal are saved together or not at all.</li>
-    <li><b>Crash.</b> With <code>CRASH_AFTER=&lt;n&gt;</code> set, undo counts every INSERT, UPDATE and DELETE it runs. On the n-th one the process stops at once, without saving the step it is in, as a killed process would. SQLite discards the half-done step when the file is opened again. Steps that finished before it stay saved, so <code>CRASH_AFTER=1</code> saves nothing: the first write is inside the first transaction. Only <code>undo</code> reads the variable.</li>
+    <li><b>Crash.</b> With <code>CRASH_AFTER=&lt;n&gt;</code> set, undo counts every INSERT, UPDATE and DELETE it runs. On the n-th one the process stops at once, without saving the step it is in, as a killed process would. SQLite discards the half-done step when the file is opened again. Steps that finished before it stay saved, so <code>CRASH_AFTER=1</code> saves nothing: the first write is inside the first transaction. Only <code>undo</code> and <code>redo</code> read the variable.</li>
     <li><b>Resume.</b> The next run skips every journal row that already has an outcome and carries on with the first one that does not. Each decision looks only at the live graph, so the resumed run makes the same decisions as an uninterrupted one.</li>
     <li><b>A dump in between.</b> A node goes in before its arrows, and the database refuses an arrow to a missing node. A dump taken after a crash shows a smaller graph that is still whole, with correct tags.</li>
     <li><b>Run it twice.</b> The second run finds an outcome on every row, writes nothing, and prints the same report.</li>
@@ -547,6 +548,193 @@ CREATE UNIQUE INDEX one_parent ON edges(to_id) WHERE type = 'contains';</code></
     {"from": "n6", "to": "n4", "type": "references", "outcome": "restored"}
   ]
 }</code></pre>
+</section>
+
+<section>
+  <h2><span class="n">4</span>How redo works</h2>
+  <p>Redo is the one extension the task names. It is built as a fifth command next to the task's four, and this section is its design. Undo already records most of what redo needs: which undo decided each row, and what a merged node held before. Redo adds a round number and a finished mark to the entries in <code>ops</code>, and columns for its own outcome to the journal rows.</p>
+  <p><code>redo &lt;op_id&gt;</code> takes the <code>op_id</code> of a subtree delete that has been undone, and applies the delete again to the graph as it is now. It does not replay the delete from scratch. It takes back what the undo put back: restored nodes go out again, the arrows undo added are removed, and the fields undo filled get the value they had before. Like undo, it never removes or changes anything a person did in the meantime. For redo, "in the meantime" means after the undo.</p>
+  <p>Pick a story, then step through it. Each one starts where an undo left the graph.</p>
+
+  <div class="stepper">
+    <div class="pick"><span class="pk">Story</span><div class="tabs flows" id="rflowtabs" role="tablist" aria-label="Redo stories"></div></div>
+    <div class="pick"><span class="pk">Step</span><div class="tabs" id="rstagetabs" role="tablist" aria-label="Steps of the redo story"></div></div>
+    <p class="fnote" id="rflowwhy"></p>
+    <figure>
+      <div class="scroll"><svg id="rstory" viewBox="0 0 696 396" role="img" aria-label="The example graph at the selected stage of the redo story."></svg></div>
+      <div class="legend">
+        <span><i class="sw"></i>contains</span>
+        <span><i class="sw d"></i>references</span>
+        <span><i class="sw g"></i>taken out again, back in the journal</span>
+        <span><i class="sw res"></i>put back by undo; after redo: kept</span>
+        <span><i class="sw mer"></i>merged by undo; after redo: fields put back</span>
+        <span><i class="sw skp"></i>waiting on a delete</span>
+        <span><b class="k-new">blue</b> changed in this stage</span>
+      </div>
+    </figure>
+    <div class="story" id="rstorytext" aria-live="polite"></div>
+    <div class="stack" id="rfieldtable"></div>
+  </div>
+
+  <h3>What redo does, in order</h3>
+  <ol>
+    <li>Record the redo in <code>ops</code> as an operation of its own. A repeated or resumed run finds the entry and does not add another.</li>
+    <li>Take every row of this delete: each node and arrow the delete removed, whichever undo command put it back. Add the rows of other deletes that an undo of this delete retried and put back.</li>
+    <li>For each node undo merged, put back the fields undo filled, then refresh the tags of the live node and everything below it. Merges go first, because a merge can sit on a node that the next step takes out.</li>
+    <li>From both sets, take the nodes undo restored, children before parents. For each one decide removed or kept (next figure). A removed node goes back into the journal together with every arrow that touches it. That is one transaction.</li>
+    <li>Take the remaining arrows undo added, the ones between nodes that stay, and remove them.</li>
+    <li>Go through the rows that are left: a node undo skipped, and an arrow undo skipped or found already there. Nothing changes in the graph for these. They are reported as unchanged.</li>
+    <li>Mark the redo finished and print the report.</li>
+  </ol>
+  <p>Each step also resets the row it handled, in the same transaction. A row redo kept keeps its outcome. Every other row is opened again: it has no outcome, as it was right after the delete. "What each row goes back to" below gives the rule.</p>
+  <p>The order is undo's order turned around. Undo goes parents first, because a child needs its parent to attach to. Redo goes children first, because a parent can only leave once nothing is left under it.</p>
+
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 760 274" role="img" aria-label="Decision for each node that undo restored. If a person has written one of its fields since it came back, it is kept. Otherwise, if anything is still attached that this redo is not taking back, it is kept. Otherwise it is removed again.">
+        <text class="ts" x="175" y="18" text-anchor="middle">each node undo restored, children first</text>
+        <path class="ar" d="M175,24 V44" marker-end="url(#ah)"/>
+        <rect class="bx" x="20" y="46" width="310" height="56" rx="6"/>
+        <text class="tb" x="175" y="70" text-anchor="middle">Has a person written one of its fields</text>
+        <text class="tb" x="175" y="88" text-anchor="middle">since it came back?</text>
+        <path class="ar" d="M330,74 H450" marker-end="url(#ah)"/><text class="ts" x="390" y="67" text-anchor="middle">yes</text>
+        <rect class="o-res" x="452" y="46" width="288" height="56" rx="6"/>
+        <text class="c-res" x="466" y="70">kept</text><text class="ts" x="466" y="88">stays live; reason: written_since_undo</text>
+        <path class="ar" d="M175,102 V138" marker-end="url(#ah)"/><text class="ts" x="183" y="124">no</text>
+        <rect class="bx" x="20" y="140" width="310" height="56" rx="6"/>
+        <text class="tb" x="175" y="164" text-anchor="middle">Is anything still attached to it?</text>
+        <text class="ts" x="175" y="182" text-anchor="middle">a child, an arrow, or another undo's work on it</text>
+        <path class="ar" d="M330,168 H450" marker-end="url(#ah)"/><text class="ts" x="390" y="161" text-anchor="middle">yes</text>
+        <rect class="o-res" x="452" y="140" width="288" height="56" rx="6"/>
+        <text class="c-res" x="466" y="164">kept</text><text class="ts" x="466" y="182">stays live; reason: still_in_use</text>
+        <path class="ar" d="M175,196 V238 H450" marker-end="url(#ah)"/><text class="ts" x="183" y="222">no</text>
+        <rect class="bx" x="452" y="212" width="288" height="52" rx="6"/>
+        <text class="tb" x="466" y="234">removed</text><text class="ts" x="466" y="252">back into the journal, with its arrows</text>
+      </svg>
+    </div>
+    <figcaption>A node leaves only when it is exactly as undo left it and nothing else depends on it. Because children are handled first, a parent whose child was kept is kept too.</figcaption>
+  </figure>
+
+  <h3>Taking a restored node out again</h3>
+  <p>A node undo restored is removed again when both of these hold. Otherwise it is <b class="r">kept</b>, and the report gives the reason.</p>
+  <ul>
+    <li><b>No person has written it since it came back.</b> <code>field_writes</code> holds the number of the last write to each field, and the undo has a number of its own in <code>ops</code>. A write by a person with a larger number came after the undo. Reason when it fails: <code>written_since_undo</code>.</li>
+    <li><b>Nothing else is attached to it.</b> Every child and every arrow that touches it must be one this redo is taking out as well. A node created or moved under it since, an arrow a person or the ingest added to it since, a child that was itself kept, or a row of another delete that its own undo put there, all keep it in place. So does another undo that still stands and worked on this same node after it came back: it merged an old node into it, or it found the node live and counts it as restored for its own delete. Removing the node would take that undo's result away with it. Reason: <code>still_in_use</code>.</li>
+  </ul>
+  <p>A removed node goes back into the journal of its delete, and its name is free again. The journal copy is refreshed from the live node as it leaves. If the ingest reported a new type for the node while it was back, that type is not lost. A write by the ingest does not keep a node in place: it only happened because the node was there, and the next ingest run recreates the node if the source still has it.</p>
+
+  <h3>Putting filled fields back</h3>
+  <p>When undo merged an old node into a live one, it filled some fields of the live node and saved what they held before in <code>prior</code>: the value, and who wrote it and when. Redo goes through the filled fields one at a time:</p>
+  <ul>
+    <li><b>The field is still as undo left it.</b> Redo puts back the earlier value and the earlier write record. Most of the time the earlier value is "empty, nobody wrote it". Example: the description and the tag <code>pii</code> on the new <code>sales.orders</code>.</li>
+    <li><b>A person has written the field since the undo.</b> It stays as the person wrote it. Reason: <code>written_since_undo</code>.</li>
+  </ul>
+  <p>Undo copied the old write record along with the value, so "still as undo left it" is a plain comparison: the field's write record is still the one undo copied. Fields undo did not fill were never touched and are not touched now. Inherited tags are recomputed, as always: when <code>pii</code> leaves the live node, it leaves everything below it.</p>
+
+  <h3>Arrows</h3>
+  <ul>
+    <li><b>removed</b>: undo added the arrow, and it goes out again. This covers an arrow that touches a removed node, and an arrow undo re-aimed at a node that stays. Example: <code>reports.daily → n7</code>.</li>
+    <li><b>kept</b>, reason <code>end_kept</code>: the arrow touches a restored node that redo kept. A node that stays keeps the arrows undo gave it, so it is not left half connected.</li>
+    <li><b>unchanged</b>, reason <code>not_added_by_undo</code>: undo found the arrow already there, or skipped it. There is nothing to take out of the graph.</li>
+    <li><b>unchanged</b>, reason <code>changed_since_undo</code>: someone re-pointed the arrow away after the undo. Whether it is there now or not is their doing, so redo leaves it as it is.</li>
+  </ul>
+  <p>When an arrow undo added touches one node that leaves and one that stays, the arrow leaves: an arrow cannot point at a missing node. It is kept only when neither end leaves.</p>
+  <p>A node undo skipped is reported the same way: <b>unchanged</b>, reason <code>not_restored_by_undo</code>.</p>
+
+  <h3>What each row goes back to</h3>
+  <p>Redo changes the graph, and it also resets the journal rows, so that the journal says again that the delete stands. After redo, every row of this delete that the undo decided is in one of two states:</p>
+  <ul>
+    <li><b>Kept.</b> The node or arrow is still live because redo kept it. The row keeps the outcome undo gave it, because that outcome is still true.</li>
+    <li><b>Open.</b> Every other row has no outcome and no <code>waiting_on</code>, as it was right after the delete. This includes the rows where redo changed nothing in the graph: a node or arrow undo skipped, an arrow undo found already there, a merge that filled nothing, and an arrow someone moved away since.</li>
+  </ul>
+  <p>The rows that needed no change in the graph are opened too, for two reasons:</p>
+  <ul>
+    <li><b>A skipped row must stop waiting.</b> A row skipped with <code>waiting_on: d2</code> comes back when d2 is undone. If redo left it waiting, a later undo of d2 would restore part of a delete that was redone. The story "Redo while rows were waiting" shows this.</li>
+    <li><b>A later undo must decide every row afresh.</b> Example: undo merged the old <code>sales.orders.email</code> into n8 and filled nothing. After the redo, someone deletes n8. If the row still said "merged into n8", the next undo of d1 would pass over it. But its name is free and its parent is live, and that is exactly the node an undo must restore.</li>
+  </ul>
+  <p>One kind of row is not opened. <b>A row of another delete that an undo of this delete retried</b> goes back to skipped, <code>waiting_on</code> this delete. That is what it was before the undo, and its own delete is still undone. The report lists these rows apart from the delete's own rows, under <code>other_nodes</code> and <code>other_edges</code>, each with the delete it belongs to.</p>
+
+  <h3>When a later delete got there first</h3>
+  <p>Between the undo and the redo, a person can delete something undo put back. It is then in the journal of that later delete, here d3. Redo never takes back a person's delete, and never edits the journal of another delete.</p>
+  <ul>
+    <li><b>A node undo restored is already gone.</b> Example: undo d1 restored <code>sales.orders.total</code>, then d3 deleted it on its own. Redo d1 has nothing to remove. Outcome <b>unchanged</b>, reason <code>deleted_since</code>, and the report names d3. The row is opened like the others. Its journal copy is refreshed from the copy d3 holds, so the journal of d1 has the node as it last was.</li>
+    <li><b>The node undo filled is already gone.</b> Example: undo d1 filled the description of n7, then d3 deleted n7. Redo cannot put the field back, because n7 is not in the graph. Outcome <b>unchanged</b>, reason <code>target_not_live</code>, naming d3. The copy of n7 in the journal of d3 keeps the filled value. An undo of d3 has to bring n7 back with the fields it had when d3 removed it, so that copy is left as it is.</li>
+    <li><b>An arrow undo added is already gone,</b> because d3 removed one of its ends. Outcome <b>unchanged</b>, reason <code>deleted_since</code>.</li>
+  </ul>
+  <p>Such a node is now covered by two deletes, and undoing either one brings it back. A new undo of d1 finds the name free and the parent live, so it restores the node. That is the rule of undo, and it holds here too: the redo applied d1 again, and d1 covers this node. An undo of d3 after that finds the node live under the same id and has nothing to add: restored, reason <code>already_live</code>. The small fixture gets one test for the first case.</p>
+
+  <h3>Work done between the undo and the redo</h3>
+  <p>The same three kinds as for undo, each with one rule.</p>
+  <ul>
+    <li><b>Independent.</b> It touched something undo did not put back. Rule: left exactly as it is.</li>
+    <li><b>Conflicting.</b> A person wrote on, or attached something to, a thing undo put back. Example: a person rewrote the description of the restored <code>sales.orders.total</code>. Rule: that thing stays, with everything it needs to stay whole: its parents and its arrows. The report lists it as kept.</li>
+    <li><b>Caused.</b> It happened only because the undo happened. Example: the ingest found <code>sales.orders.total</code> live again and updated its type instead of creating a new node. Rule: it does not hold redo back, and the journal copy keeps the newer type.</li>
+  </ul>
+  <p>Redo only takes back rows undo decided, and only while they are as undo left them. It never overwrites or removes anything a person did after the undo.</p>
+
+  <h3>Redo, undo, and their order</h3>
+  <ul>
+    <li><b>Redo straight after undo gives back the graph from before the undo.</b> Nothing has changed in between, so every row is taken back. The dump is the same, byte for byte, as the dump taken just before the undo.</li>
+    <li><b>Undo can run again after a redo.</b> Every row redo did not keep is open, so undo decides it like a new row, against the graph of that moment. With nothing changed in between, it gives the same graph as the first undo.</li>
+    <li><b>A redone delete stays redone.</b> Redo opens the rows that were waiting on another delete. Undoing that other delete later does not bring them back. Only a new undo of this delete does.</li>
+    <li><b>Only an undone delete can be redone.</b> For a delete that was never undone, for any other operation, or for an id that does not exist, <code>redo</code> prints an error and writes nothing.</li>
+    <li><b>Redo d1 takes out what d1 removed, whichever undo command put it back.</b> A node of d1 that waited and was restored later by the undo of d2 is still a row of d1. So the result does not depend on which undo ran first. The story "The parent was deleted later" shows this.</li>
+    <li><b>After several undos, redo the newest undo first.</b> If an older undo is redone while a newer one still stands, some of its nodes may carry children or arrows that are rows of the newer undo's own delete, or may hold fields the newer undo merged in. Those nodes are kept, reason <code>still_in_use</code>. Redone newest first, nothing is kept for this reason. This mirrors undo, where the newest delete undone first means nothing waits.</li>
+  </ul>
+
+  <h3>Going back and forth</h3>
+  <p>A person can undo, redo, undo again and redo again. One undo and the redo that follows it is a round.</p>
+  <ul>
+    <li><b>Each undo and each redo has its own entry in <code>ops</code>.</b> The entry stores which delete it is for and which round it is, as values of their own. Its name (<code>undo:d1</code>, <code>redo:d1</code>) is only a label, and nothing is read out of it, so a delete with an unusual <code>op_id</code> cannot be mixed up with a round. A journal row points at the entry that decided it by the entry's running number, so "since it came back" always has an exact meaning.</li>
+    <li><b>Repeat or new round.</b> The same command can mean two things, so the tool looks at the newest undo or redo entry for the delete.
+      For <code>undo d1</code>: with no entry, this is the first undo. If the newest entry is an undo, this call repeats or resumes it, so a finished undo writes nothing. If the newest entry is a redo, a new round starts.
+      For <code>redo d1</code>: with no undo entry, it is an error. If the newest entry is an undo, this is the redo of that round. If the newest entry is a redo, this call repeats or resumes it.</li>
+    <li><b>Each entry is marked finished</b> when its last step is saved. <code>redo</code> refuses while the undo of the same delete is unfinished, and <code>undo</code> refuses while its redo is unfinished. The tool says which command to run again first, and writes nothing. A crashed run is always finished by running the same command again.</li>
+    <li><b>A redo outcome names the redo that wrote it.</b> A redo skips only the rows that carry its own mark, and decides a row marked in an earlier round again. So a node that came back in a new round can go out again, and a node an earlier redo kept is looked at again.</li>
+  </ul>
+
+  <h3>Crashes and running it twice</h3>
+  <ul>
+    <li><b>One row, one transaction,</b> as for undo. The graph change, the tag refresh, the row's redo outcome and the reset of its undo outcome are saved together or not at all.</li>
+    <li><b>Each journal row gets a redo outcome</b> in columns of its own: removed, kept or unchanged for nodes and arrows, and reverted for a merged node, with a reason. An opened row loses its undo outcome and keeps its redo outcome. The report is a printout of the redo outcomes.</li>
+    <li><b>Crash and resume.</b> <code>CRASH_AFTER=&lt;n&gt;</code> works for redo as it does for undo. A resumed run skips every row that already has an outcome from this redo.</li>
+    <li><b>Run it twice.</b> The second run finds the redo marked finished, writes nothing, and prints the same report.</li>
+  </ul>
+
+  <h3>The report for the first story</h3>
+<pre><code>{
+  "op_id": "d1",
+  "redo_of": "undo:d1",
+  "nodes": [
+    {"id": "n2", "qualified_name": "sales.orders", "outcome": "reverted", "target": "n7",
+     "put_back": ["description", "tags"], "kept": {}},
+    {"id": "n3", "qualified_name": "sales.orders.email", "outcome": "unchanged", "reason": "nothing_filled"},
+    {"id": "n4", "qualified_name": "sales.orders.total", "outcome": "removed"}
+  ],
+  "edges": [
+    {"from": "n1", "to": "n2", "type": "contains",   "outcome": "unchanged", "reason": "not_added_by_undo"},
+    {"from": "n2", "to": "n3", "type": "contains",   "outcome": "unchanged", "reason": "not_added_by_undo"},
+    {"from": "n2", "to": "n4", "type": "contains",   "outcome": "removed", "was": ["n7", "n4"]},
+    {"from": "n6", "to": "n2", "type": "references", "outcome": "removed", "was": ["n6", "n7"]},
+    {"from": "n6", "to": "n4", "type": "references", "outcome": "removed"}
+  ]
+}</code></pre>
+
+  <h3>What the checker tests</h3>
+  <ol>
+    <li><b>No change made by a person after the undo is lost or altered by the redo.</b> Tested like check 1, with a dump just before the redo and one just after.</li>
+    <li><b>Redo straight after undo gives the dump from before the undo, byte for byte.</b> A second undo then gives the dump from after the first undo.</li>
+    <li><b>The report has one entry for every node and arrow the delete removed, exactly once,</b> as undo's report does. Each outcome agrees with the dump: a removed row is gone, a kept row is there, a reverted field holds its earlier value.</li>
+    <li><b>Two rounds give the same two graphs.</b> Undo, redo, undo, redo with nothing in between: the dumps after both undos are the same, and the dumps after both redos are the same, byte for byte.</li>
+    <li><b>An undo after a redo passes checks 1 to 5 of a first undo.</b> For check 1, "after the delete" is read as "after the redo", because the redo is the delete applied again.</li>
+    <li><b>An unfinished command blocks the other one.</b> A redo after a crashed undo, and an undo after a crashed redo, print an error and leave the dump as it was.</li>
+    <li><b>The graph stays whole.</b> No two live nodes share a name, no arrow points at a missing node, and inherited tags are correct.</li>
+    <li><b>A redone delete stays redone.</b> After a redo, undoing another delete brings back no node or arrow of this one. Tested with the story "Redo while rows were waiting": undo d1, redo d1, undo d2 must end with <code>sales</code> and <code>sales.refunds</code> back and <code>sales.orders</code> still deleted.</li>
+    <li><b>Redo is idempotent and resumable,</b> tested as checks 6 and 7 are for undo.</li>
+  </ol>
+  <p>For every redo the checker works from the dump just before it, the dump just after it and its report. Where one delete was undone it also works out, on its own, the graph the redo must leave: what undo put back is the difference between the dumps around the undo, and each node of it must leave unless a person wrote on it since, an arrow undo did not add touches it, or a child that undo put back stays. The dump after redo has to equal that graph.</p>
+  <p>On the main fixture the run script redoes the delete straight after the undo, redoes it a second time, undoes it again, lets people and the ingest change a few of the restored nodes, and redoes it once more. It also crashes the redo at ten points and tries each command while the other is unfinished.</p>
+  <p>Each redo story above is a test in the small fixture, the same way the undo stories are, and so are the three cases of "When a later delete got there first" and "Two undos on one node". That makes thirteen redo runs. They use three more operations files (the delete alone, the delete with one recreated node, and a column that is deleted, recreated and deleted again) and four small files that are applied between an undo and a redo.</p>
 </section>
 
 <section>
@@ -960,26 +1148,216 @@ python checker.py fixture --small fixture_small --run run</code></pre>
   }
   function val(v){return typeof v==='function'?v():v}
 
-  var svg=document.getElementById('story'),txt=document.getElementById('storytext'),ft=document.getElementById('fieldtable'),
-      flowtabs=document.getElementById('flowtabs'),stagetabs=document.getElementById('stagetabs'),why=document.getElementById('flowwhy');
-  var cur={f:0,s:0};
+  /* ---- redo stories: each starts where an undo left the graph ---- */
+  var OUT1={state:'ghost',note:'out again, in journal d1'};
+  var afterUndoEdges=function(){return usual[3].edges};
+  var beforeUndoEdges=[e('sales','refunds','c'),e('sales','orders','c'),e('orders','email','c'),e('orders','currency','c'),
+                       e('orders','total','c','ghost'),e('daily','orders','r','ghost'),e('daily','total','r','ghost')];
+  function redone(desc,note,chg){
+    return [n('sales','n1',null,'Sales schema',['finance','gdpr'],[]),
+            n('refunds','n5',null,'Approved refunds only',[],['finance','gdpr']),
+            n('daily','n6',null,'Daily revenue',[],[]),
+            n('orders','n7','ben',desc,[],['finance','gdpr'],{newId:1,state:'merged',note:note,chg:chg}),
+            n('email','n8',null,'Hashed customer email',['hashed'],['finance','gdpr'],{newId:1,ownerSet:1}),
+            n('currency','n9',null,null,[],['finance','gdpr'],{newId:1}),
+            n('total','n4','asha','Order total, EUR',[],['pii','finance'],{state:'ghost',note:'out again, in journal'})];
+  }
+  var straight=[
+   {tab:'After undo',title:'Where undo d1 left the graph',
+    text:['This is the last step of the usual undo story. Old <code>n2</code> was merged into <code>n7</code>: undo filled the description and the tag <code>pii</code>, and left the owner ben alone.',
+          'Old <code>n3</code> was merged into <code>n8</code> with nothing filled. <code>sales.orders.total</code> (<code>n4</code>) was restored under n7.',
+          'Undo added three arrows: n7 to total, <code>reports.daily</code> to n7, and <code>reports.daily</code> to total.',
+          'Nobody has touched anything since. The person who ran undo now changes their mind.'],table:'',
+    nodes:function(){return usual[3].nodes},edges:afterUndoEdges},
+   {tab:'Redo',title:'redo d1',
+    text:['<code>sales.orders.total</code>: nobody wrote on it and nothing new is attached, so it is <b>removed</b> again. It goes back into the journal with its two arrows.',
+          '<code>sales.orders</code> (n7): the description and the tag <code>pii</code> are still as undo left them, so both are <b class="m">put back</b> to empty. The owner ben was never undo\'s, so it is not touched.',
+          '<code>sales.orders.email</code> (n8): undo filled nothing here, so there is nothing to take back.',
+          'The arrow <code>reports.daily → n7</code> was added by undo and is <b>removed</b>. The arrows from <code>sales</code> to n7 and from n7 to n8 were there before undo and stay.',
+          'Inherited tags are recomputed: <code>pii</code> leaves n7, and with it email and currency.',
+          'The graph is now exactly what it was just before undo. The dump is the same, byte for byte.'],
+    table:tbl('What redo did with each row',['row of d1','what undo had done','still as undo left it?','redo'],[
+      ['sales.orders.total (n4)','restored it','yes','<b>removed</b>'],
+      ['sales.orders (n2 into n7)<br>description','filled it','yes','<b class="m">put back</b> to empty'],
+      ['','tags: filled <code>pii</code>','yes','<b class="m">put back</b> to empty'],
+      ['','owner: left ben alone','not undo\'s','unchanged'],
+      ['sales.orders.email (n3 into n8)','filled nothing','','unchanged'],
+      ['arrow n7 → total','added it','goes with total','<b>removed</b>'],
+      ['arrow daily → n7','added it','yes','<b>removed</b>'],
+      ['arrow daily → total','added it','goes with total','<b>removed</b>'],
+      ['arrows sales → n7, n7 → n8','found them already there','not undo\'s','unchanged']]),
+    nodes:function(){return redone(null,'fields put back · n2 in journal',{desc:1})},edges:beforeUndoEdges},
+   {tab:'Undo again',title:'undo d1, a second time',
+    text:['Every row of d1 is open again, so undo decides each one afresh.',
+          'Nothing changed in between, so it decides the same way: n2 is merged into n7 and fills the same two fields, and total is restored with its three arrows.',
+          'The graph is again exactly what the first undo produced. Undo and redo can go back and forth.'],table:'',
+    nodes:function(){return usual[3].nodes},edges:afterUndoEdges}
+  ];
+
+  var TAX='Order total with tax';
+  var edited=[
+   {tab:'After undo',title:'Where undo d1 left the graph',
+    text:['A simpler case: after delete d1 nothing else happened, and undo d1 restored all three nodes and all five arrows.'],table:'',
+    nodes:function(){return [S(),R(),D(),O(RS),M(RS),T(RS)]},edges:function(){return ed(all('res'))}},
+   {tab:'Edit',title:'A person edits a restored node',
+    text:['A person rewrites the description of <code>sales.orders.total</code>. This happens after the undo.'],table:'',
+    nodes:function(){return [S(),R(),D(),O(),M(),T({desc:TAX,chg:{desc:1}})]},edges:function(){return ed()}},
+   {tab:'Redo',title:'redo d1',
+    text:['Children first. <code>sales.orders.email</code>: untouched and nothing attached, so it is <b>removed</b> again.',
+          '<code>sales.orders.total</code>: a person wrote on it after the undo. Removing it would lose that edit, so it is <b class="r">kept</b>, reason <code>written_since_undo</code>.',
+          '<code>sales.orders</code>: nobody wrote on it, but it still has a child, so it is <b class="r">kept</b>, reason <code>still_in_use</code>.',
+          'The arrows of the two kept nodes stay, reason <code>end_kept</code>. A node that stays is not left half connected.',
+          'The report says the delete was only partly redone, and why. To remove the rest, the person deletes it with a new delete.'],
+    table:tbl('What redo did with each row',['row of d1','redo','reason'],[
+      ['sales.orders.email (n3)','<b>removed</b>',''],
+      ['sales.orders.total (n4)','<b class="r">kept</b>','written_since_undo'],
+      ['sales.orders (n2)','<b class="r">kept</b>','still_in_use'],
+      ['arrow orders → email','<b>removed</b>','goes with email'],
+      ['the other four arrows','<b class="r">kept</b>','end_kept']]),
+    nodes:function(){return [S(),R(),D(),O({state:'restored',note:'kept · still in use'}),M(OUT1),
+                             T({desc:TAX,state:'restored',note:'kept · written since undo'})]},
+    edges:function(){return ed({'sales>orders':'res','orders>email':'ghost','orders>total':'res','daily>orders':'res','daily>total':'res'})}}
+  ];
+
+  var NEWDESC='Orders, one row each';
+  function afterUndoWith(desc,chg){
+    return [n('sales','n1',null,'Sales schema',['finance','gdpr'],[]),
+            n('refunds','n5',null,'Approved refunds only',[],['finance','gdpr']),
+            n('daily','n6',null,'Daily revenue',[],[]),
+            n('orders','n7','ben',desc,['pii'],['finance','gdpr'],{newId:1,chg:chg}),
+            n('email','n8',null,'Hashed customer email',['hashed'],['pii','finance','gdpr'],{newId:1,ownerSet:1}),
+            n('total','n4','asha','Order total, EUR',[],['pii','finance','gdpr']),
+            n('currency','n9',null,null,[],['pii','finance','gdpr'],{newId:1})];
+  }
+  var liveAfterUndo=[e('sales','refunds','c'),e('sales','orders','c'),e('orders','email','c'),e('orders','currency','c'),
+                     e('orders','total','c'),e('daily','orders','r'),e('daily','total','r')];
+  var rewritten=[
+   {tab:'After undo',title:'Where undo d1 left the graph',
+    text:['The end of the usual undo story again. Undo filled two fields on <code>n7</code>: the description "One row per order" and the tag <code>pii</code>.'],table:'',
+    nodes:function(){return usual[3].nodes},edges:afterUndoEdges},
+   {tab:'Edit',title:'A person rewrites a field undo filled',
+    text:['A person changes the description of <code>sales.orders</code> (n7) to "Orders, one row each". That is a write by a person after the undo.'],table:'',
+    nodes:function(){return afterUndoWith(NEWDESC,{desc:1})},edges:liveAfterUndo},
+   {tab:'Redo',title:'redo d1',
+    text:['Redo goes through the fields undo filled on n7, one at a time.',
+          'Description: a person has written it since the undo, so it <b class="r">stays</b> as they wrote it, reason <code>written_since_undo</code>.',
+          'Tags: still as undo left them, so <code>pii</code> is <b class="m">put back</b> to empty. It also leaves email and currency.',
+          '<code>sales.orders.total</code> is untouched, so it is <b>removed</b> again with its arrows.',
+          'Each field is decided on its own, as in undo. One edited field does not stop the others from going back.'],
+    table:tbl('Field by field on n7',['field','what undo had done','since the undo','redo'],[
+      ['description','filled "One row per order"','a person rewrote it','<b class="r">kept</b> as the person wrote it'],
+      ['tags','filled <code>pii</code>','untouched','<b class="m">put back</b> to empty'],
+      ['owner','left ben alone','untouched','unchanged']]),
+    nodes:function(){return redone(NEWDESC,'tags put back · description kept',{})},edges:beforeUndoEdges}
+  ];
+
+  var twoUndos=[
+   {tab:'Both undone',title:'Two deletes, both undone',
+    text:['From the undo story "A neighbour is deleted later". d1 deleted <code>sales.orders</code>, then d2 deleted <code>reports.daily</code>.',
+          'Undo d1 ran first. It restored the three nodes, but the two arrows from <code>reports.daily</code> had to wait on d2.',
+          'Undo d2 ran second. It restored <code>reports.daily</code> and then retried the two waiting arrows. So those two arrows are rows of d1 that the undo of d2 decided.'],table:'',
+    nodes:function(){return [S(),R(),O({note:'restored by undo d1'}),M(),T(),D({state:'restored',note:'restored by undo d2'})]},
+    edges:function(){return ed({'daily>orders':'res','daily>total':'res'})}},
+   {tab:'Redo d2',title:'redo d2, the newest undo first',
+    text:['Redo d2 takes <code>reports.daily</code>, the one node of d2, and the two arrows of d1 that the undo of d2 retried.',
+          '<code>reports.daily</code> is untouched and both arrows on it are coming out with it, so it is <b>removed</b> again.',
+          'The two arrows are rows of d1, so they do not go into the journal of d2. They go back to what they were before: <b class="s">skipped</b>, <code>waiting_on: d2</code>.',
+          'The graph is exactly what it was before undo d2. Undoing d2 again later would retry the arrows again.'],table:'',
+    nodes:function(){return [S(),R(),O(),M(),T(),D({state:'ghost',note:'out again, in journal d2'})]},
+    edges:function(){return ed({'daily>orders':'skp','daily>total':'skp'})}},
+   {tab:'Or: redo d1',title:'What if d1 is redone first instead',
+    text:['Start again from "Both undone" and run redo d1 while the undo of d2 still stands.',
+          'Redo d1 takes every row of d1 that is back, whichever undo command put it back. That includes the two arrows from <code>reports.daily</code>, which the undo of d2 restored.',
+          'So all three nodes and all five arrows are <b>removed</b> again. Nothing is kept.',
+          '<code>reports.daily</code> stays. It is a row of d2, and d2 is still undone.',
+          'The rows of d1 are open, not waiting. A later redo d2 only has <code>reports.daily</code> to take out.'],table:'',
+    nodes:function(){return [S(),R(),D(),O(OUT1),M(OUT1),T(OUT1)]},
+    edges:function(){return ed(all('ghost'))}}
+  ];
+
+  /* ---- both undone, the parent was deleted later: redo takes rows by delete, not by undo command ---- */
+  var OUT2={state:'ghost',note:'out again, in journal d2'},BY2={state:'restored',note:'restored by undo d2'};
+  var parentRedo=[
+   {tab:'Both undone',title:'Two deletes, both undone',
+    text:['From the undo story "The parent is deleted later". d1 deleted <code>sales.orders</code>, then d2 deleted <code>sales</code>.',
+          'Undo d1 ran first and could put nothing back: every row of d1 waited on d2.',
+          'Undo d2 ran second. It restored <code>sales</code> and <code>sales.refunds</code>, then retried the rows of d1 and restored them too.',
+          'So every node of d1 is back, but the command that put it there was undo d2.'],table:'',
+    nodes:function(){return [D(),S(RS),R(RS),O(BY2),M(BY2),T(BY2)]},edges:function(){return ed(all('res',{'sales>refunds':'res'}))}},
+   {tab:'Redo d1',title:'redo d1',
+    text:['The person wants <code>sales.orders</code> deleted after all, and <code>sales</code> kept.',
+          'Redo d1 takes every row of d1 that is back. It does not matter that undo d2 was the command that restored them.',
+          'Children first: <code>email</code> and <code>total</code> are <b>removed</b>, then <code>sales.orders</code>, with all five arrows.',
+          '<code>sales</code> and <code>sales.refunds</code> stay. They are rows of d2, and d2 is still undone.',
+          'The rows of d1 are open, not waiting.'],table:'',
+    nodes:function(){return [D(),S(),R(),O(OUT1),M(OUT1),T(OUT1)]},edges:function(){return ed(all('ghost'))}},
+   {tab:'Or: redo d2',title:'What if d2 is redone instead',
+    text:['Start again from "Both undone" and run redo d2.',
+          'Redo d2 takes its own rows, <code>sales</code> and <code>sales.refunds</code>, and the rows of d1 that the undo of d2 retried.',
+          'Children first. The nodes of d1 leave first and go back to what they were before: <b class="s">skipped</b>, <code>waiting_on: d2</code>. Then <code>sales.refunds</code> and <code>sales</code> are <b>removed</b>.',
+          'The graph is exactly what it was before undo d2. Delete d1 is still undone, so its rows wait for d2 to be undone again.'],table:'',
+    nodes:function(){return [D(),S(OUT2),R(OUT2),O(SK),M(SK),T(SK)]},edges:function(){return ed(all('skp',{'sales>refunds':'ghost'}))}}
+  ];
+
+  /* ---- redo while the undo's rows were waiting on a later delete ---- */
+  var gone1=function(){return [O(J1),M(J1),T(J1)]};
+  var waited=[
+   {tab:'After undo',title:'Where undo d1 left the graph',
+    text:['From the undo story "The parent is deleted later". d1 deleted <code>sales.orders</code>, then d2 deleted <code>sales</code>.',
+          'Undo d1 ran while d2 still stood. The parent <code>sales</code> was not live, so every row of d1 was <b class="s">skipped</b>, <code>waiting_on: d2</code>. The graph did not change.',
+          'Left like this, the rows come back as soon as d2 is undone.',
+          'The person who ran undo now changes their mind.'],table:'',
+    nodes:function(){return [D(),S(J2),R(J2),O(SK),M(SK),T(SK)]},edges:function(){return ed(all('skp',{'sales>refunds':'ghost'}))}},
+   {tab:'Redo',title:'redo d1',
+    text:['Undo put nothing back, so redo has nothing to take out. The graph does not change.',
+          'Every row is reported as <b>unchanged</b>: reason <code>not_restored_by_undo</code> for the three nodes, <code>not_added_by_undo</code> for the five arrows.',
+          'The rows are opened again: no outcome and no <code>waiting_on</code>. They no longer wait on d2.'],
+    table:tbl('What redo did with each row',['row of d1','before redo','redo','after redo'],[
+      ['the three nodes','skipped, waiting on d2','unchanged','open, not waiting'],
+      ['the five arrows','skipped, waiting on d2','unchanged','open, not waiting']]),
+    nodes:function(){return [D(),S(J2),R(J2)].concat(gone1())},edges:function(){return ed(all('ghost',{'sales>refunds':'ghost'}))}},
+   {tab:'Undo d2',title:'Person B runs undo d2',
+    text:['<code>sales</code> and <code>sales.refunds</code> are <b class="r">restored</b>.',
+          'No row waits on d2 any more, so undo d2 has nothing to retry. <code>sales.orders</code> and its columns stay deleted, as the redo asked.',
+          'Had redo left the rows waiting, this step would have restored all of d1.',
+          'A new undo d1 would decide the rows afresh and bring them back.'],table:'',
+    nodes:function(){return [D(),S(RS),R(RS)].concat(gone1())},edges:function(){return ed(all('ghost',{'sales>refunds':'res'}))}}
+  ];
+
+  var redoFlows=[
+    {name:'Redo straight after undo',why:'Nothing changed since the undo, so redo takes all of it back.',stages:straight},
+    {name:'A person edited a restored node',why:'A node a person wrote on after the undo stays, and so does its parent.',stages:edited},
+    {name:'A person rewrote a filled field',why:'A field undo filled goes back to what it was, unless a person has written it since.',stages:rewritten},
+    {name:'Two undos, then redo',why:'Redo d2 sends the rows of d1 it retried back to waiting. Redo d1 takes out everything d1 removed.',stages:twoUndos},
+    {name:'The parent was deleted later',why:'Undo d2 put the nodes of d1 back. Redo d1 still takes them out, and leaves the parent.',stages:parentRedo},
+    {name:'Redo while rows were waiting',why:'Redo cancels the wait, so undoing the other delete later does not bring this one back.',stages:waited}
+  ];
+
   function buttons(list,sel,label){
     return list.map(function(it,i){return '<button role="tab" data-i="'+i+'" aria-selected="'+(i===sel?'true':'false')+'">'+label(it,i)+'</button>'}).join('');
   }
-  function render(){
-    var fl=flows[cur.f],s=fl.stages[cur.s];
-    flowtabs.innerHTML=buttons(flows,cur.f,function(it){return it.name});
-    stagetabs.innerHTML=buttons(fl.stages,cur.s,function(it,i){return (i+1)+' · '+it.tab});
-    why.textContent=fl.why;
-    svg.innerHTML=val(s.edges).map(drawEdge).join('')+val(s.nodes).map(drawNode).join('');
-    svg.setAttribute('aria-label',fl.name+', step '+(cur.s+1)+': '+s.title);
-    txt.innerHTML='<h4>'+s.title+'</h4><ul>'+s.text.map(function(t){return '<li>'+t+'</li>'}).join('')+'</ul>';
-    ft.innerHTML=s.table||'';
-  }
   function pick(ev){var b=ev.target.closest('button');return b?+b.dataset.i:-1}
-  flowtabs.addEventListener('click',function(ev){var i=pick(ev);if(i<0)return;cur.f=i;cur.s=0;render()});
-  stagetabs.addEventListener('click',function(ev){var i=pick(ev);if(i<0)return;cur.s=i;render()});
-  render();
+  /* One stepper: p is the prefix of its element ids ('' for undo, 'r' for redo). */
+  function mount(flows,p){
+    var svg=document.getElementById(p+'story'),txt=document.getElementById(p+'storytext'),ft=document.getElementById(p+'fieldtable'),
+        flowtabs=document.getElementById(p+'flowtabs'),stagetabs=document.getElementById(p+'stagetabs'),why=document.getElementById(p+'flowwhy');
+    var cur={f:0,s:0};
+    function render(){
+      var fl=flows[cur.f],s=fl.stages[cur.s];
+      flowtabs.innerHTML=buttons(flows,cur.f,function(it){return it.name});
+      stagetabs.innerHTML=buttons(fl.stages,cur.s,function(it,i){return (i+1)+' · '+it.tab});
+      why.textContent=fl.why;
+      svg.innerHTML=val(s.edges).map(drawEdge).join('')+val(s.nodes).map(drawNode).join('');
+      svg.setAttribute('aria-label',fl.name+', step '+(cur.s+1)+': '+s.title);
+      txt.innerHTML='<h4>'+s.title+'</h4><ul>'+s.text.map(function(t){return '<li>'+t+'</li>'}).join('')+'</ul>';
+      ft.innerHTML=s.table||'';
+    }
+    flowtabs.addEventListener('click',function(ev){var i=pick(ev);if(i<0)return;cur.f=i;cur.s=0;render()});
+    stagetabs.addEventListener('click',function(ev){var i=pick(ev);if(i<0)return;cur.s=i;render()});
+    render();
+  }
+  mount(flows,'');
+  mount(redoFlows,'r');
 })();
 </script>
 
