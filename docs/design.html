@@ -472,6 +472,8 @@ CREATE UNIQUE INDEX one_parent ON edges(to_id) WHERE type = 'contains';</code></
     <li>A retried row keeps its single entry in the report of its own delete, with the outcome updated.</li>
     <li>Each retried row is its own step, so a crash during the retries is resumed like any other.</li>
     <li>Undone newest first, nothing ever waits.</li>
+    <li>The same holds for a node of this delete that came back once and was then deleted again by a later delete that still stands. The node belongs to that later delete now. This undo leaves it out: skipped, reason <code>deleted_again</code>, <code>waiting_on</code> the later delete. Undoing the later delete brings it back. This can only happen when the delete is undone a second time, after a redo (section 4).</li>
+    <li>Last, undo looks once more at its own rows that were skipped. If a retried row of an older delete brought the same node back in this undo, the row is marked restored, reason <code>already_live</code>, and its arrows are decided again. So a report never says skipped for something that is live.</li>
   </ul>
   <p>The stories "A neighbour is deleted later" and "The parent is deleted later" show both cases.</p>
 
@@ -661,7 +663,7 @@ CREATE UNIQUE INDEX one_parent ON edges(to_id) WHERE type = 'contains';</code></
     <li><b>The node undo filled is already gone.</b> Example: undo d1 filled the description of n7, then d3 deleted n7. Redo cannot put the field back, because n7 is not in the graph. Outcome <b>unchanged</b>, reason <code>target_not_live</code>, naming d3. The copy of n7 in the journal of d3 keeps the filled value. An undo of d3 has to bring n7 back with the fields it had when d3 removed it, so that copy is left as it is.</li>
     <li><b>An arrow undo added is already gone,</b> because d3 removed one of its ends. Outcome <b>unchanged</b>, reason <code>deleted_since</code>.</li>
   </ul>
-  <p>Such a node is now covered by two deletes, and undoing either one brings it back. A new undo of d1 finds the name free and the parent live, so it restores the node. That is the rule of undo, and it holds here too: the redo applied d1 again, and d1 covers this node. An undo of d3 after that finds the node live under the same id and has nothing to add: restored, reason <code>already_live</code>. The small fixture gets one test for the first case.</p>
+  <p>Such a node belongs to the later delete now. A new undo of d1 does not bring it back, because that would take back d3, which someone did afterwards. Its row is skipped, reason <code>deleted_again</code>, <code>waiting_on: d3</code>, by the same rule as "When a later delete is in the way" in section 3. Undoing d3 brings the node back, and the retry then marks the row of d1 as restored, reason <code>already_live</code>: the node is live under its own id and there is nothing to add. The small fixture has a test for the first case.</p>
 
   <h3>Work done between the undo and the redo</h3>
   <p>The same three kinds as for undo, each with one rule.</p>
@@ -674,8 +676,9 @@ CREATE UNIQUE INDEX one_parent ON edges(to_id) WHERE type = 'contains';</code></
 
   <h3>Redo, undo, and their order</h3>
   <ul>
-    <li><b>Redo straight after undo gives back the graph from before the undo.</b> Nothing has changed in between, so every row is taken back. The dump is the same, byte for byte, as the dump taken just before the undo.</li>
+    <li><b>Redo straight after undo gives back the graph from before the undo.</b> Nothing has changed in between, so every row is taken back. The dump is the same, byte for byte, as the dump taken just before the undo. There is one exception. If an earlier redo had to keep a node, and what kept it has gone since, this redo takes that node out too. Example: the first redo kept <code>sales.refunds</code> because the ingest had added an arrow to it, and that arrow has since been deleted. Redo means "delete what the delete removed", so the node leaves now, although this undo did not put it back.</li>
     <li><b>Undo can run again after a redo.</b> Every row redo did not keep is open, so undo decides it like a new row, against the graph of that moment. With nothing changed in between, it gives the same graph as the first undo.</li>
+    <li><b>A new undo checks the rows redo kept.</b> A kept row still says restored, and that can have stopped being true: the kept node was deleted again, or a kept arrow was moved away. Before deciding anything, undo opens every row of the delete that says something is in the graph when it is not, and decides it again by the normal rules. So the report of every undo is true for the graph it leaves. The first undo of a delete has no such row.</li>
     <li><b>A redone delete stays redone.</b> Redo opens the rows that were waiting on another delete. Undoing that other delete later does not bring them back. Only a new undo of this delete does.</li>
     <li><b>Only an undone delete can be redone.</b> For a delete that was never undone, for any other operation, or for an id that does not exist, <code>redo</code> prints an error and writes nothing.</li>
     <li><b>Redo d1 takes out what d1 removed, whichever undo command put it back.</b> A node of d1 that waited and was restored later by the undo of d2 is still a row of d1. So the result does not depend on which undo ran first. The story "The parent was deleted later" shows this.</li>
@@ -726,7 +729,7 @@ CREATE UNIQUE INDEX one_parent ON edges(to_id) WHERE type = 'contains';</code></
     <li><b>Redo straight after undo gives the dump from before the undo, byte for byte.</b> A second undo then gives the dump from after the first undo.</li>
     <li><b>The report has one entry for every node and arrow the delete removed, exactly once,</b> as undo's report does. Each outcome agrees with the dump: a removed row is gone, a kept row is there, a reverted field holds its earlier value.</li>
     <li><b>Two rounds give the same two graphs.</b> Undo, redo, undo, redo with nothing in between: the dumps after both undos are the same, and the dumps after both redos are the same, byte for byte.</li>
-    <li><b>An undo after a redo passes checks 1 to 5 of a first undo.</b> For check 1, "after the delete" is read as "after the redo", because the redo is the delete applied again.</li>
+    <li><b>An undo after a redo passes checks 1 to 5 of a first undo.</b> One addition: a node that a later delete removed again is not expected back, and must not come back.</li>
     <li><b>An unfinished command blocks the other one.</b> A redo after a crashed undo, and an undo after a crashed redo, print an error and leave the dump as it was.</li>
     <li><b>The graph stays whole.</b> No two live nodes share a name, no arrow points at a missing node, and inherited tags are correct.</li>
     <li><b>A redone delete stays redone.</b> After a redo, undoing another delete brings back no node or arrow of this one. Tested with the story "Redo while rows were waiting": undo d1, redo d1, undo d2 must end with <code>sales</code> and <code>sales.refunds</code> back and <code>sales.orders</code> still deleted.</li>
@@ -734,7 +737,7 @@ CREATE UNIQUE INDEX one_parent ON edges(to_id) WHERE type = 'contains';</code></
   </ol>
   <p>For every redo the checker works from the dump just before it, the dump just after it and its report. Where one delete was undone it also works out, on its own, the graph the redo must leave: what undo put back is the difference between the dumps around the undo, and each node of it must leave unless a person wrote on it since, an arrow undo did not add touches it, or a child that undo put back stays. The dump after redo has to equal that graph.</p>
   <p>On the main fixture the run script redoes the delete straight after the undo, redoes it a second time, undoes it again, lets people and the ingest change a few of the restored nodes, and redoes it once more. It also crashes the redo at ten points and tries each command while the other is unfinished.</p>
-  <p>Each redo story above is a test in the small fixture, the same way the undo stories are, and so are the three cases of "When a later delete got there first" and "Two undos on one node". That makes thirteen redo runs. They use three more operations files (the delete alone, the delete with one recreated node, and a column that is deleted, recreated and deleted again) and four small files that are applied between an undo and a redo.</p>
+  <p>Each redo story above is a test in the small fixture, the same way the undo stories are, and so are the three cases of "When a later delete got there first" and "Two undos on one node". One more story covers a node that redo kept and a later delete then removed. That makes fourteen redo runs. They use three more operations files (the delete alone, the delete with one recreated node, and a column that is deleted, recreated and deleted again) and four small files that are applied between an undo and a redo.</p>
 </section>
 
 <section>
@@ -803,7 +806,7 @@ CREATE UNIQUE INDEX one_parent ON edges(to_id) WHERE type = 'contains';</code></
     <dt>ops_e.jsonl</dt><dd>Story "A person moved an arrow away". d1 deletes <code>sales.orders</code>. Ingest recreates it and its arrow from <code>reports.daily</code>. A person re-points that arrow to <code>sales.refunds</code>.</dd>
     <dt>ops_f.jsonl</dt><dd>Story "The recreated node was moved". People do not create nodes, so first the ingest creates <code>archive</code> and a person gives it the tag <code>old</code>. d1 deletes <code>sales.orders</code>, ingest recreates it, and a person moves it under <code>archive</code>.</dd>
   </dl>
-  <p>The content is fixed, with no random choices. <code>gen_fixture.py --small</code> writes the seven files. Files a, b and c have two deletes. Each is run twice from a fresh load: once undoing d1 and then d2, and once undoing d2 and then d1. Files d, e and f have one delete and are run once. That makes nine runs. The checker tests each one for:</p>
+  <p>The content is fixed, with no random choices. <code>gen_fixture.py --small</code> writes these seven files, and the files of the redo stories (section 4). Files a, b and c have two deletes. Each is run twice from a fresh load: once undoing d1 and then d2, and once undoing d2 and then d1. Files d, e and f have one delete and are run once. That makes nine runs. The checker tests each one for:</p>
   <ul>
     <li><b>Files d, e and f.</b> The report of undo d1 is the one the story shows, and the graph ends as the story's last picture. For file d that report is the example report above, word for word.</li>
     <li><b>Files a and b, both orders.</b> After both undos the dump is the same, byte for byte, as the dump taken right after load. Everything that was deleted is back and nothing else changed.</li>

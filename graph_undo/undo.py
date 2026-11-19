@@ -6,12 +6,17 @@ Order of work:
    change; decide the arrow from its parent; refresh the tags of the node and everything below it.
 2. The delete's remaining removed arrows (the references ones), each decided the same way.
 3. Rows of earlier undos that are waiting on this delete, newest journal first, parents first.
-4. The report, printed from the journal rows.
+4. Own rows that were skipped although their node or arrow is live after step 3: decided once more.
+5. The report, printed from the journal rows.
 
 The undo is logged as an operation of its own the first time it runs (by a person), and every journal row
 records which undo decided it. A merge also records what the live node held before (the row's `prior`), and
 the report lists any written value it replaced. That is what redo needs. An undo after a redo is a new
 round with a new entry (rounds.py): it decides the rows redo opened again, against the graph as it is then.
+A row redo kept still has its outcome, and that outcome can have stopped being true since: a kept node was
+deleted again, a kept arrow was moved away. So before deciding, undo opens every row of this delete that
+says something is in the graph when it is not, and decides those too. The first undo of a delete has no
+such row.
 
 Each row is one step and one transaction: its graph change, its tag refresh and its outcome in the journal
 are saved together or not at all. A row that already has an outcome is never decided again, so a second run
@@ -26,6 +31,9 @@ Node decision
     no parent at delete time      -> restored at the top level (when the name is free)
     its own id holds the name     -> restored, reason already_live: the undo of another delete that covers
                                      this node brought it back first, and there is nothing to add
+    a newer delete removed it     -> skipped, reason deleted_again, waiting_on that delete: the node came back
+    again and still stands           once (an earlier undo), was deleted again, and is that delete's now.
+                                     This comes before the parent check and can only happen after a redo.
 
 Merge, field by field (description, owner, tags, and type): the most recent write wins. The seed counts as
 written at seq 0; a value put back by an undo keeps the seq of its original write. Everything in a journal
@@ -113,8 +121,75 @@ class UndoRun:
         self.undo_seq = undo_seq  # the running number of this undo, written next to every outcome it decides
 
     async def run(self) -> None:
+        await self._reopen_stale()
         await self._decide_rows(self.op_id, retrying_for=None)
         await self.retry_waiting()
+        await self._settle()
+
+    async def _settle(self) -> None:
+        """Own rows that were skipped, although their node or arrow is in the graph when this undo ends.
+
+        A row of this delete waits for something another delete holds. Then a retried row of an older
+        delete, which covers the same node, brings that node back in this same undo. The waiting row is
+        decided once more, so the report does not say skipped for something that is live.
+        """
+        store = self.store
+        nodes = await store.fetchall(
+            "SELECT id FROM removed_nodes WHERE delete_op = ? AND outcome = 'skipped' "
+            "AND id IN (SELECT id FROM nodes) ORDER BY ord",
+            (self.op_id,),
+        )
+        for (node_id,) in nodes:
+            async with store.transaction():
+                row = await self._node_row(self.op_id, node_id)
+                if row is not None and row.outcome == SKIPPED and await node_live(store, node_id):
+                    await self._mark_node(row, RESTORED, "already_live")
+        edges = await store.fetchall(
+            "SELECT from_id, to_id, type FROM removed_edges WHERE delete_op = ? AND outcome = 'skipped' "
+            "AND waiting_on IS NOT NULL ORDER BY ord",
+            (self.op_id,),
+        )
+        for from_id, to_id, edge_type in edges:
+            async with store.transaction():
+                ends = (await self.where(from_id), await self.where(to_id))
+                if all(end.live_id is not None for end in ends):  # nothing it waited for is missing any more
+                    added = await self._decide_edge(self.op_id, (from_id, to_id, edge_type))
+                    if added is not None and edge_type == CONTAINS:
+                        await refresh_subtree(store, added[1])
+
+    async def _reopen_stale(self) -> None:
+        """Open the rows of this delete whose outcome is no longer true, so they are decided again.
+
+        A row says "restored" (or, for an arrow, "added at these ends") and the node or arrow is not in the
+        graph: redo kept it, and a later delete or a re-point took it away since. One row, one transaction.
+        """
+        store = self.store
+        nodes = await store.fetchall(
+            "SELECT id FROM removed_nodes WHERE delete_op = ? AND outcome = 'restored' "
+            "AND id NOT IN (SELECT id FROM nodes) ORDER BY ord",
+            (self.op_id,),
+        )
+        for (node_id,) in nodes:
+            async with store.transaction():
+                await store.write(
+                    "UPDATE removed_nodes SET outcome = NULL, reason = NULL, merged_into = NULL, waiting_on = NULL, "
+                    "detail = NULL, decided_by = NULL, prior = NULL WHERE delete_op = ? AND id = ? AND outcome = 'restored'",
+                    (self.op_id, node_id),
+                )
+        edges = await store.fetchall(
+            "SELECT r.from_id, r.to_id, r.type FROM removed_edges r WHERE r.delete_op = ? "
+            "AND (r.outcome = 'restored' OR (r.outcome = 'merged' AND r.reason = 'endpoint_merged')) "
+            "AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.from_id = COALESCE(r.now_from, r.from_id) "
+            "                AND e.to_id = COALESCE(r.now_to, r.to_id) AND e.type = r.type) ORDER BY r.ord",
+            (self.op_id,),
+        )
+        for edge in edges:
+            async with store.transaction():
+                await store.write(
+                    "UPDATE removed_edges SET outcome = NULL, reason = NULL, waiting_on = NULL, now_from = NULL, "
+                    "now_to = NULL, decided_by = NULL WHERE delete_op = ? AND from_id = ? AND to_id = ? AND type = ?",
+                    (self.op_id, *edge),
+                )
 
     async def retry_waiting(self) -> None:
         """Rows of earlier undos that were skipped because this delete held a node they need.
@@ -173,6 +248,13 @@ class UndoRun:
                 await self._mark_node(row, MERGED, "name_in_use", merged_into=holder, detail=detail, prior=prior)
                 target = holder
             else:
+                later = await self._deleted_again_by(delete_op, row.id)
+                if later is not None:
+                    # Undoing this delete must not take back a later delete of the same node.
+                    await self._mark_node(row, SKIPPED, "deleted_again", waiting_on=later)
+                    if parent_arrow is not None:
+                        await self._mark_edge(delete_op, parent_arrow, SKIPPED, "endpoint_not_live", waiting_on=later)
+                    return
                 if parent_arrow is not None:
                     parent = await self.where(parent_arrow[0])
                     if parent.live_id is None:
@@ -232,6 +314,19 @@ class UndoRun:
             # Held by a delete nobody has undone yet, or by a row that is itself waiting on another delete.
             return Place(None, delete_op if outcome is None else waiting_on)
         return Place(None)
+
+    async def _deleted_again_by(self, delete_op: str, node_id: str) -> str | None:
+        """The newer delete that removed this same node again and has not been undone, if there is one.
+
+        The node was live in between, so an earlier undo of this delete had restored it. An undone newer
+        delete does not count: its row is decided, or skipped while it waits for something else.
+        """
+        return await self.store.fetchval(
+            "SELECT r.delete_op FROM removed_nodes r JOIN ops o ON o.op_id = r.delete_op "
+            "WHERE r.id = ? AND r.outcome IS NULL AND o.seq > (SELECT seq FROM ops WHERE op_id = ?) "
+            "ORDER BY o.seq DESC LIMIT 1",
+            (node_id, delete_op),
+        )
 
     async def _decide_edge(self, delete_op: str, edge: Edge) -> tuple[str, str] | None:
         """Decide one removed arrow and write the outcome. Returns the arrow added, if one was."""

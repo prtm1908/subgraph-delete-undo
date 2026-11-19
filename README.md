@@ -31,12 +31,12 @@ python3 checker.py fixture --small fixture_small --run run
    again, then a file that re-uses an op_id for a different operation. Then redo on the main scenario:
    redo, redo again, undo again, a few changes by people and the ingest, redo once more, 10 crashed
    redos, and each command tried while the other is unfinished. Last, it runs each undo story's file
-   from a fresh load, the two-delete ones in both undo orders, and the 13 redo stories. Takes about 17
+   from a fresh load, the two-delete ones in both undo orders, and the 14 redo stories. Takes about 17
    seconds.
 4. Reads only files and never runs the tool. Prints one PASS or FAIL line per check, and exits with
    status 0 when every check passes.
 
-Optional: `python3 mutation_check.py` breaks the undo in 9 different ways and the redo in 8, each in a
+Optional: `python3 mutation_check.py` breaks the undo in 11 different ways and the redo in 8, each in a
 throwaway copy of the repository, and shows which checks catch each break. It takes a few minutes and
 exits with status 0 when every break is caught.
 
@@ -92,6 +92,9 @@ python3 graphundo.py undo op0001                      # a new round: the same du
   earlier value. Anything a person wrote on or attached since the undo stays, with a reason in the
   report. It reads `CRASH_AFTER=<n>` and can be resumed and repeated like undo. A delete that was never
   undone prints an error and writes nothing.
+- An undo after a redo first checks the rows redo kept: a row that says restored for something no longer
+  in the graph is decided again. A node that a later delete removed again is not brought back by this
+  undo: it is skipped, reason `deleted_again`, and waits on that later delete.
 - Undo and redo can go back and forth. The same command twice in a row is a repeat and writes nothing;
   `undo` after a `redo` starts a new round. Each one is refused while the other is unfinished after a
   crash: run the crashed command again first.
@@ -209,7 +212,7 @@ For every redo, from the dump before it, the dump after it and its report:
 On the main scenario it also checks that redo straight after undo gives the dump from before the undo,
 byte for byte; that a second redo changes nothing; that undo after redo gives the first undo's dump and
 report again; that 10 crashed redos finish to the same dump and report; and that a redo after a crashed
-undo, and an undo after a crashed redo, are refused. The 13 redo stories of the small fixture are each
+undo, and an undo after a crashed redo, are refused. The 14 redo stories of the small fixture are each
 held against what the design's story shows.
 
 It also checks the 11 cases the generator planted (`planted.json`). Applying the operations file again

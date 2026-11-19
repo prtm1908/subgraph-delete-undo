@@ -43,7 +43,7 @@ its report:
 and for the main scenario: redo straight after undo gives the dump from before the undo, byte for byte; a
 second redo changes nothing; undo after redo gives the first undo's dump and report again; crashed redos
 finish to the same dump and report; a redo after a crashed undo, and an undo after a crashed redo, are
-refused. Then the thirteen redo stories of the small fixture, each held against what its story shows.
+refused. Then the fourteen redo stories of the small fixture, each held against what its story shows.
 Exit status 0 when every check passes.
 """
 
@@ -184,8 +184,12 @@ def idempotency_problems(after: str, after2: str, report: str, report2: str, wri
 
 
 def check_undo(
-    res: Results, scope: str, replay: Replay, delete_op: str, before: Graph, after: Graph, report: dict[str, Any]
+    res: Results, scope: str, replay: Replay, delete_op: str, before: Graph, after: Graph, report: dict[str, Any],
+    deleted_again: frozenset[str] = frozenset(),
 ) -> None:
+    """deleted_again: nodes of this delete that a later delete removed again and that are still gone. That
+    can only happen when this is not the first undo of the delete. They belong to the later delete: this
+    undo must not bring them back (check 1), so they are not expected back either (check 2)."""
     deleted = replay.deletes[delete_op]
     seq = deleted["seq"]
 
@@ -214,6 +218,7 @@ def check_undo(
             removals += 1
             if nid not in before.nodes and nid in after.nodes:
                 problems.append(f"node {nid} a person deleted after {delete_op} is back")
+    problems += [f"node {nid}, deleted again by a later delete, is back" for nid in sorted(deleted_again) if nid in after.nodes]
     res.add(
         "1 no human change lost",
         scope,
@@ -234,7 +239,7 @@ def check_undo(
     expected: set[str] = set()
     for nid in walk_down(roots, children):
         snap = removed[nid]
-        if snap["qualified_name"] in live_names:
+        if snap["qualified_name"] in live_names or nid in deleted_again:
             continue
         parent = snap["parent"]
         if parent is None:
@@ -1082,10 +1087,27 @@ REDO_EXPECT: dict[str, dict[str, Any]] = {
     },
     "rows_were_waiting": {"same": [(2, 1)], "all": {2: "unchanged"}, "only": {3: ["d1"]}},
     "deleted_again": {
-        "single": True, "same": [(4, "load"), (5, "load")],
+        # The later delete d3 owns total: a second undo of d1 leaves it out and waits; undo d3 brings it back.
+        "single": True, "same": [(4, 2), (5, "load")],
         "rows": {3: {"n4": ("unchanged", "deleted_since", {"deleted_by": "d3"}), "n2": ("removed", None), "n3": ("removed", None),
                      "n6>n4": ("unchanged", "deleted_since", {"deleted_by": "d3"})},
-                 5: {"n4": ("restored", "already_live")}},
+                 4: {"n2": ("restored", None), "n3": ("restored", None), "n4": ("skipped", "deleted_again", {"waiting_on": "d3"}),
+                     "n2>n4": ("skipped", "endpoint_not_live", {"waiting_on": "d3"})},
+                 5: {"n4": ("restored", None), "n2>n4": ("restored", None), "n6>n4": ("restored", None)},
+                 6: {"n4": ("restored", "already_live"), "n2>n4": ("merged", "already_present")}},
+        "zero": [6],
+    },
+    "kept_then_deleted": {
+        # Redo keeps total (a person edited it) and its parent. A later delete d3 then removes total. The row
+        # of d1 still says restored, so a new undo of d1 has to look at it again: it waits on d3.
+        "single": True, "same": [(6, 2), (7, 6)], "zero": [7],
+        "rows": {3: {"n3": ("removed", None), "n4": ("kept", "written_since_undo"), "n2": ("kept", "still_in_use")},
+                 5: {"n2": ("restored", None), "n3": ("restored", None), "n4": ("skipped", "deleted_again", {"waiting_on": "d3"}),
+                     "n2>n4": ("skipped", "endpoint_not_live", {"waiting_on": "d3"}),
+                     "n6>n4": ("skipped", "endpoint_not_live", {"waiting_on": "d3"})},
+                 6: {"n4": ("restored", None)},
+                 7: {"n4": ("restored", "already_live")}},
+        "fields": {6: {"n4": {"description": "Order total with tax"}}},
     },
     "merge_target_deleted": {
         "single": True, "same": [(3, 2), (4, 1)],
@@ -1135,6 +1157,7 @@ async def check_redo_stories(res: Results, small: Path, run: Path) -> None:
 
         # The checks every redo gets, from the dump before it, the dump after it and its report.
         human: set[tuple[str, str]] = set()  # written by a person since the last undo
+        gone_later: set[str] = set()  # nodes removed by an operation applied after the first undo
         around: dict[str, tuple[int, int]] = {}  # delete -> the dumps around its last undo
         started: dict[str, int] = {}
         redone: set[str] = set()
@@ -1142,6 +1165,7 @@ async def check_redo_stories(res: Results, small: Path, run: Path) -> None:
             command, arg, ok = step["command"], step["arg"], step["exit"] == 0
             if command == "apply":
                 human |= human_fields_of(later[arg])
+                gone_later |= set(Graph.parse(dumps[k - 1]).nodes) - set(Graph.parse(dumps[k]).nodes)
             elif command == "undo":
                 started.setdefault(arg, k - 1)
                 if ok:
@@ -1149,8 +1173,9 @@ async def check_redo_stories(res: Results, small: Path, run: Path) -> None:
                     human = set()
                     if arg in redone and arg in replay.deletes:
                         # An undo after a redo passes the checks of a first undo.
-                        check_undo(res, f"{label}, undo {arg} again", replay, arg, Graph.parse(dumps[k - 1]),
-                                   Graph.parse(dumps[k]), json.loads(files[f"{k}_out.json"]))
+                        was = Graph.parse(dumps[k - 1])
+                        check_undo(res, f"{label}, undo {arg} again", replay, arg, was, Graph.parse(dumps[k]),
+                                   json.loads(files[f"{k}_out.json"]), frozenset(gone_later - set(was.nodes)))
             elif command == "redo" and ok and step["writes"]:
                 deleted = replay.deletes[arg]
                 span = around.get(arg)

@@ -45,8 +45,8 @@ For each removed arrow, after resolving each end to where it is now. The first m
 6. Otherwise it is added: restored, or merged (`endpoint_merged`) when an end was merged.
 
 Undoing a later delete retries the rows that were waiting on it: newest journal first, then parents
-first. In this order nothing has to wait. A row that already has an outcome is never decided again.
-That makes a second run write nothing, and a crashed run resume from its last committed step.
+first. In this order nothing has to wait. Within one undo a row that has an outcome is never decided
+again. That makes a second run write nothing, and a crashed run resume from its last committed step.
 
 ## Redo (the extension)
 
@@ -59,7 +59,9 @@ delete, and it never removes or changes anything a person did after the undo.
 - After redo every row is either kept or open again, so a row that waited on another delete stops waiting.
 - Redo of d1 takes out what d1 removed, whichever undo command put it back.
 - Undo and redo can be repeated and go back and forth in rounds. Each is refused while the other is unfinished.
-- If a later delete removed something first, redo leaves it alone and the report says so.
+- If a later delete removed something first, redo leaves it alone and the report says so. A later undo
+  of the older delete does not bring it back either: it waits on that later delete (`deleted_again`).
+- An undo after a redo checks the rows redo kept, and decides again any that are no longer true.
 
 ## What the model proposed that I rejected, and why
 

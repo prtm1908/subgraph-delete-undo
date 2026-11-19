@@ -75,6 +75,12 @@ MUTATIONS: dict[str, list[tuple[str, str, str]]] = {
          'where, params = "outcome IS NULL", (delete_op,)',
          "where, params = \"(outcome IS NULL OR outcome = 'skipped')\", (delete_op,)"),
     ],
+    "undo brings back a node a later delete removed again": [
+        ("graph_undo/undo.py", "                if later is not None:\n", "                if False:\n"),
+    ],
+    "a new undo trusts a row that is no longer true": [
+        ("graph_undo/undo.py", "        await self._reopen_stale()\n", "        pass\n"),
+    ],
     # ---- redo ----
     "redo removes a node a person wrote on": [
         ("graph_undo/redo.py", '            return "written_since_undo"\n', "            pass\n"),
