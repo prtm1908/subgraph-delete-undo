@@ -36,7 +36,6 @@ when I asked the model to check its own work.
   exist.
 - It didn't say how "most recent" is judged for a value an earlier undo had put back, and one
   example gave the wrong owner without it.
-- It started changing the design before telling me what problems it had found.
 
 ## Building undo
 
@@ -53,11 +52,8 @@ when I asked the model to check its own work.
 - It wrote the same logic in several places and left code that could never run.
 - Undo wasn't recorded as an operation, although the design says every change records who made it.
 - The design stated the merge rule two different ways.
-- Its first summary of what I had rejected and checked overstated what happened in five places.
 - Its checker took different inputs from the ones in the design, so results produced by hand
   couldn't be checked.
-- The README said the database's journal was the only extra file, but loading also creates a
-  temporary one.
 
 ## Designing and building redo
 
@@ -79,4 +75,3 @@ when I asked the model to check its own work.
 - The design promised that redo straight after undo always gives back the earlier graph, which
   isn't always true.
 - Its plan for the checker had no test that redo doesn't keep too much.
-- After redo was built, the design and DECISIONS.md still had statements that were no longer true.
