@@ -64,8 +64,6 @@ when I asked the model to check its own work.
 - It had no rule for items that changed between the undo and the redo.
 - One of its own recommended rules let undo bring back an item a person had deleted.
 - Undo reports called items "restored" when they weren't in the graph.
-- It added a 60-second limit on the whole test run, which the task doesn't ask for and which could
-  fail on slower machines.
 - Undo reports called items "skipped" when they were back in the graph.
 - The design took merges back after removing items, which is the wrong order, because a merge can
   sit on an item that redo then removes.
