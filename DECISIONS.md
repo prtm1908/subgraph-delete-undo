@@ -48,6 +48,10 @@ node, redo leaves that node to the later delete.
 
 ## Model suggestions I rejected
 
+**The mistakes the model made in the design and in the code are listed in
+[MODEL_MISTAKES.md](MODEL_MISTAKES.md): more than 40 of them, grouped by stage. Read it alongside
+this section.** The points below are only the suggestions I turned down.
+
 Design:
 - **Letting a node have several parents.** Words like subtree, root and "its parent" describe a
   tree, so I kept one parent per node.
