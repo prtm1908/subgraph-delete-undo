@@ -40,28 +40,28 @@ removed is left to that delete.
 ## What the model proposed that I rejected, and why
 
 Design:
-- **Several parents per node**, offered as a fix for a "conflict" with the task. I had it re-read the
-  task: "subtree", "root" and "its parent" describe a tree, so one parent per node stayed.
+- **Several parents per node**, offered as a fix for a supposed conflict. "Subtree", "root" and
+  "its parent" describe a tree, so one parent per node stayed.
 - **A wrong example** of undo reversing a person's re-point (an arrow to a deleted node is deleted
   too). It corrected it when I asked for the steps, and I chose the rule that undo skips an arrow a
   person moved away.
 - **Invariant 2 as a problem.** Undo brings back parent and child, so only the reading of "parent is
   live" needed one line.
-- **Handling edits to deleted nodes.** The task does not ask for it; it stays one "rejected" sentence.
+- **Handling edits to deleted nodes.** Not required; it stays one "rejected" sentence.
 - **A preview before undo:** good UX, not core capability for a prototype.
 
 Build:
-- **Choices that bent the task's wording**, found when I had every deviation checked against it:
+- **Choices that bent the required wording**, found when I had every deviation checked:
   WAL mode (extra files beside "one SQLite file"), dropping repeated tags ("tags (a list)"), and
   skipping the tag recompute after a delete. All three were put back.
-- **Refusing operations by the "wrong" actor**, beyond the task's one rule. Only two refusals remain:
+- **Refusing operations by the "wrong" actor**, beyond the one stated rule. Only two refusals remain:
   ingest can't edit fields, and people can't ingest.
 - **Silently skipping an op_id that was already used**, even for a different operation. Now an error.
-- **The 24-hour undo limit**, my own idea: I had it enforced, then removed it, because the task says
-  any delete can be undone later and puts retention out of scope.
+- **The 24-hour undo limit**, my own idea: I had it enforced, then removed it, because any delete must
+  stay undoable later, and retention is out of scope.
 
 I also weighed keeping a duplicate node instead of merging, and kept merging: invariant 3 allows one
-live node per name, and the task's outcomes include "merged".
+live node per name, and "merged" is one of the report's outcomes.
 
 ## What I verified myself
 
@@ -70,10 +70,10 @@ live node per name, and the task's outcomes include "merged".
 - **The undo stories.** I stepped through the undo tabs, asked for the other fields' clashes beside
   tags, and asked for every exceptional case to become a story of its own, start to end. Those stories
   are now tests (`fixture_small/ops_a` to `ops_f`).
-- **Claims against the task's wording.** I made the model re-check several before accepting them:
+- **Claims about what is required.** I made the model re-check several before accepting them:
   several parents, undo of anything but a delete, only ingest creating nodes, ids built from op_id and
   name, edits to deleted nodes.
-- **The code against the task and the design.** I had every deviation listed, decided each one, and
+- **The code against the requirements and the design.** I had every deviation listed, decided each one, and
   had duplicated code removed with outputs proven byte-identical before and after.
 - **Random testing.** I had undo and redo tested with thousands of random sequences of edits, deletes,
   undos and redos, checking the invariants after every command. It found cases redo did not handle; I
