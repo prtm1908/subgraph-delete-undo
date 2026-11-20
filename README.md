@@ -3,7 +3,8 @@
 A command-line tool that stores a graph in one SQLite file and can undo a subtree delete after other
 people and an ingest job have kept editing the graph. Redo is built too. The rules are in
 [DECISIONS.md](DECISIONS.md), and the full design is in [docs/design.html](docs/design.html) (download it
-and open it in a browser).
+and open it in a browser). The mistakes the AI model made while designing and building it are listed
+in [MODEL_MISTAKES.md](MODEL_MISTAKES.md).
 
 ## Setup
 
