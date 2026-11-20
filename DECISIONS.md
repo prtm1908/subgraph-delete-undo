@@ -77,9 +77,8 @@ Build:
   a delete by the import job. I kept only two: ingest can't edit fields, and people can't ingest.
 - **Quietly ignoring an op_id that was already used**, even for a different command. It is now an
   error, so no edit can disappear without a word.
-- **A 24-hour undo limit.** This was my own idea. I added it and then removed it from the tool: the
-  test operations carry no real clock, so undo has to work whenever it is run. The limit belongs in
-  the full system.
+- **A 24-hour undo limit.** We had discussed an undo limit on the call, but I decided to remove it
+  from the tool, because the wording of the task points towards not having one.
 
 I also thought about keeping a duplicate node instead of merging. I chose merging, so that only one
 live node ever has a given name.
