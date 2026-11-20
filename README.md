@@ -3,9 +3,21 @@
 A command-line tool that stores a graph in one SQLite file and can undo a subtree delete after other
 people and an ingest job have kept editing the graph. Redo is built too. The rules are in
 [DECISIONS.md](DECISIONS.md), and the full design is in [docs/design.html](docs/design.html) (download it
-and open it in a browser). The design page also shows, as step-through stories, how undo and redo
-behave in each case. The mistakes the AI model made while designing and building it are listed
+and open it in a browser). The mistakes the AI model made while designing and building it are listed
 in [MODEL_MISTAKES.md](MODEL_MISTAKES.md).
+
+## How undo and redo behave
+
+**Undo** brings back what the delete removed, without losing anything people did since.
+
+![Undo: before the delete, after the delete and others' edits, and after undo](docs/readme-undo.svg)
+
+**Redo** deletes again what undo brought back, but keeps anything people worked on after the undo.
+
+![Redo: after undo, after someone edits a restored node, and after redo](docs/readme-redo.svg)
+
+More cases, such as a second delete or a person moving a link, are step-through stories in
+[docs/design.html](docs/design.html), sections 3 and 4.
 
 ## Setup
 
