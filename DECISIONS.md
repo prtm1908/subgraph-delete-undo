@@ -7,23 +7,31 @@ overwrites a change a person made after the delete. The full reasoning is in
 
 ## How undo treats changes made after the delete
 
-**Unrelated changes** touched things the delete did not, such as the deleted node's parent, a
+**Unrelated changes** (independent) touched things the delete did not, such as the deleted node's parent, a
 dashboard that pointed into the deleted area, or a new node somewhere else. Undo leaves them alone,
 and restored nodes still feel their effects: a tag added above the deleted node shows up on every
 restored node below it.
 
-**Clashing changes** wrote a field that undo also wants to write. The newest value wins.
+**Clashing changes** (conflicting) wrote a field that undo also wants to write. The newest value wins.
 - Undo's saved copy (the journal) is from before the delete, so a value a person wrote later always
   wins. The saved value is then listed under `not_restored`.
 - An empty field is filled from the saved copy, unless a person emptied it on purpose.
 - A tag list counts as one value: undo keeps one whole list and never mixes two. `effective_tags`
   is always recalculated, never copied back. `type` works like any other field, with ingest as the
   writer.
+- Arrows follow the same idea. If a node already has a parent when undo wants to put its old parent
+  arrow back, or a person moved the arrow elsewhere after the delete, undo skips the old arrow and
+  the later placement stays.
 
 **Changes caused by the delete** only happened because of it. Usually the ingest saw that a name was
 free and created a new node with a new id. Undo treats this as the same node coming back: it merges
 the old node into the new one, keeps the new id (newer things already point at it), and points the
 old arrows at it.
+
+**When undo cannot bring something back.** If a node's parent is no longer in the graph, because a
+later delete removed it, the node is skipped and the report names the delete it is waiting on. When
+that delete is undone, the waiting node comes back in the same run. An arrow is skipped the same way
+when one of its ends is not live.
 
 ## Redo
 
