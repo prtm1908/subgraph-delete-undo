@@ -48,6 +48,13 @@ node, redo leaves that node to the later delete.
 
 ## Model suggestions I rejected
 
+Found on re-check:
+- **Mistakes I had fixed.** Each time I had the model check its work again, it found mistakes of
+  its own, and I had them fixed. Examples: a query that could loop forever, random ids that made two
+  runs differ, a rule that let undo put back an arrow a person had moved, lost nodes when two
+  deletes overlapped, redo failing the second time round, and reports calling nodes restored when
+  they weren't. The full list is in [MODEL_MISTAKES.md](MODEL_MISTAKES.md).
+
 Design:
 - **Letting a node have several parents.** Words like subtree, root and "its parent" describe a
   tree, so I kept one parent per node.
@@ -73,13 +80,6 @@ Build:
 - **A 24-hour undo limit.** This was my own idea. I added it and then removed it from the tool: the
   test operations carry no real clock, so undo has to work whenever it is run. The limit belongs in
   the full system.
-
-Found on re-check:
-- **Mistakes I had fixed.** Each time I had the model check its work again, it found mistakes of
-  its own, and I had them fixed. Examples: a query that could loop forever, random ids that made two
-  runs differ, a rule that let undo put back an arrow a person had moved, lost nodes when two
-  deletes overlapped, redo failing the second time round, and reports calling nodes restored when
-  they weren't. The full list is in [MODEL_MISTAKES.md](MODEL_MISTAKES.md).
 
 I also thought about keeping a duplicate node instead of merging. I chose merging, so that only one
 live node ever has a given name.
