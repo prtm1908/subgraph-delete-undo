@@ -1,5 +1,8 @@
 # Undo in a shared graph
 
+**The task was completed within the given time limit. Everything after that was only write-up: the
+decisions and model-mistakes lists, and a better README.**
+
 A command-line tool that stores a graph in one SQLite file and can undo a subtree delete after other
 people and an ingest job have kept editing the graph. Redo is built too. The rules are in
 [DECISIONS.md](DECISIONS.md), and the full design is in [docs/design.html](docs/design.html) (download it
