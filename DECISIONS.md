@@ -71,15 +71,16 @@ live node ever has a given name.
 
 ## What I checked myself
 
-- **The design.** I reviewed the whole page after every change, and went through every review of it
-  point by point, accepting, rejecting or questioning each one.
+- **The design.** After every change I reviewed what had changed, and questioned the decisions the
+  model had made, point by point, before accepting or rejecting each one.
 - **The undo stories.** I stepped through each undo tab, asked how fields other than tags clash, and
   asked for every special case to get its own story from start to end. These stories are now tests
   (`fixture_small/ops_a` to `ops_f`).
 - **The model's claims.** I made the model re-check several before accepting them: several parents,
   undoing things other than deletes, only ingest creating nodes, ids built from op_id and name, and
   edits to deleted nodes.
-- **The code against the design.** I had every difference listed and decided each one.
+- **The code against the design.** I had a model list every place where the code differed from the
+  design, then went through the list and decided how to handle each one.
   I had repeated code removed and checked that the output was exactly the same before and after.
 - **Random testing.** I had undo and redo tested with thousands of random mixes of edits, deletes,
   undos and redos, checking the graph's rules after every command. It found cases redo did not handle.
